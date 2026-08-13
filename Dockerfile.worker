@@ -1,0 +1,46 @@
+# Python worker for browser automation (playwright + stealth)
+FROM python:3.12-slim
+
+# Install playwright system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libxshmfence1 \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies first for layer caching
+COPY worker/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install playwright chromium browser
+RUN playwright install chromium
+
+# Copy worker source
+COPY worker/ ./worker/
+
+# Create directories
+RUN mkdir -p /app/screenshots /app/results
+
+# Expose gRPC port
+EXPOSE 50051
+
+WORKDIR /app/worker
+
+ENTRYPOINT ["python", "main.py"]
