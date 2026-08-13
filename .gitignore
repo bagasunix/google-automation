@@ -1,0 +1,44 @@
+# Python
+worker/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+google-automation
+cmd/test_proxy/test_proxy
+
+# Database
+*.db
+*.db-journal
+data/
+
+# Screenshots & results
+screenshots/
+results/
+
+# PID files
+.worker.pid
+.orchestrator.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.db-shm
+*.db-wal
