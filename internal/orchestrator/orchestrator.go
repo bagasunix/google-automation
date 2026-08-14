@@ -123,12 +123,19 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 // pick article, send gRPC task, record result, apply cooldown.
 // The context allows interruption during sleep/cooldown phases.
 func (o *Orchestrator) runOneCycle(ctx context.Context) {
+	// Auto-reset cycle when all proxies have been used but none are blacklisted.
+	if o.pool.AvailableCount() == 0 && o.pool.TotalCount() > 0 {
+		log.Printf("[orchestrator] pool exhausted — resetting cycle (all %d proxies requeued)", o.pool.TotalCount())
+		o.pool.ResetCycle()
+	}
+	log.Printf("[orchestrator] cycle tick — pool available=%d", o.pool.AvailableCount())
 	// 1. Should we run right now?
 	ok, reason := o.scheduler.ShouldRun()
 	if !ok {
 		log.Printf("[orchestrator] waiting: %s", reason)
 		return
 	}
+	log.Printf("[orchestrator] step1 ok, acquiring proxy...")
 
 	// 2. Acquire a proxy within active hours.
 	px, found := o.scheduler.AcquireUsableProxy()
@@ -144,6 +151,7 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		}
 		return
 	}
+	log.Printf("[orchestrator] step2 ok, proxy=%s:%d, picking article...", px.IP, px.Port)
 
 	// 3. Pick a random eligible article with a random search method.
 	selected, ok := o.articleQ.PickRandom(&o.cfg.Scheduler)
@@ -152,6 +160,7 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		o.pool.Release(px)
 		return
 	}
+	log.Printf("[orchestrator] step3 ok, article=%q, checking spread...", selected.Article.Title)
 
 	// 4. Spread check: don't search the same article twice in one day.
 	if !o.spread.IsSpreadOK(selected.Article.ID) {
@@ -160,9 +169,13 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		o.pool.Release(px)
 		return
 	}
-
-	// 5. Pick engine (Google 70 / Bing 30).
-	engine := o.scheduler.PickEngine()
+	log.Printf("[orchestrator] step4 ok, creating task...")
+	engine := o.scheduler.PickEngineAvailable()
+	if engine == "" {
+		log.Printf("[orchestrator] all engines paused — releasing proxy and waiting")
+		o.pool.Release(px)
+		return
+	}
 
 	// 6. Create a task record in the DB.
 	taskID, err := o.db.CreateTask(selected.Article.ID, px.ID, engine)
@@ -204,10 +217,11 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 
 	// 11. Check CAPTCHA rate and pause if needed.
 	if resp != nil && resp.CaptchaHit {
-		o.scheduler.TriggerCaptchaPause()
+		// Per-engine pause — Google CAPTCHA doesn't stop Bing
+		o.scheduler.TriggerEnginePause(engine)
 		o.pool.Blacklist(px, "CAPTCHA hit during search")
 	} else if o.scheduler.CheckCaptchaRate() {
-		// Aggregate CAPTCHA rate exceeded — scheduler already paused.
+		// Aggregate CAPTCHA rate exceeded — global pause
 	}
 
 	// 12. Record task end for cooldown tracking.

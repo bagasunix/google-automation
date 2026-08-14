@@ -42,7 +42,8 @@ type SchedulerConfig struct {
 type ProxyConfig struct {
 	RefreshIntervalHours int      `yaml:"refresh_interval_hours"`
 	HealthCheckTimeout   int      `yaml:"health_check_timeout"`
-	WebshareAPIKey       string   `yaml:"webshare_api_key"`
+	WebshareAPIKey       string   `yaml:"webshare_api_key"`  // legacy single key (backward compat)
+	WebshareAPIKeys      []string `yaml:"webshare_api_keys"` // multi-key rotation
 	Sources              []string `yaml:"sources"`
 }
 
@@ -104,12 +105,8 @@ func (c *Config) applyDefaults() {
 	if c.Scheduler.PostExitCooldownMax == 0 {
 		c.Scheduler.PostExitCooldownMax = 120
 	}
-	if c.Scheduler.ActiveHoursStart == 0 {
-		c.Scheduler.ActiveHoursStart = 7
-	}
-	if c.Scheduler.ActiveHoursEnd == 0 {
-		c.Scheduler.ActiveHoursEnd = 23
-	}
+	// NOTE: ActiveHoursStart/End intentionally NOT defaulted here —
+	// 0 is a valid value (midnight). Set defaults only in config.yaml.
 	if c.Proxy.RefreshIntervalHours == 0 {
 		c.Proxy.RefreshIntervalHours = 3
 	}

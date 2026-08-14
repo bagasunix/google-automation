@@ -29,17 +29,25 @@ type Manager struct {
 // NewManager creates a proxy manager.
 func NewManager(cfg *config.ProxyConfig, db *storage.DB) *Manager {
 	var scraper *Scraper
-	if cfg.WebshareAPIKey != "" {
-		scraper = NewScraperWithWebshare(cfg.Sources, cfg.WebshareAPIKey)
+
+	// Build merged key list: WebshareAPIKeys takes priority, fallback to legacy WebshareAPIKey
+	allKeys := cfg.WebshareAPIKeys
+	if len(allKeys) == 0 && cfg.WebshareAPIKey != "" {
+		allKeys = []string{cfg.WebshareAPIKey}
+	}
+
+	if len(allKeys) > 0 {
+		scraper = NewScraperWithWebshareKeys(cfg.Sources, allKeys)
 	} else {
 		scraper = NewScraper(cfg.Sources)
 	}
+
 	return &Manager{
-		cfg:     cfg,
-		db:      db,
-		pool:    NewPool(),
-		scraper: scraper,
-		checker: NewChecker(cfg.HealthCheckTimeout),
+		cfg:      cfg,
+		db:       db,
+		pool:     NewPool(),
+		scraper:  scraper,
+		checker:  NewChecker(cfg.HealthCheckTimeout),
 		notifyCh: make(chan struct{}),
 	}
 }
@@ -104,15 +112,16 @@ func (m *Manager) refresh() error {
 			continue
 		}
 		pooled = append(pooled, PooledProxy{
-			ID:       id,
-			IP:       r.Proxy.IP,
-			Port:     r.Proxy.Port,
-			Protocol: r.Proxy.Protocol,
-			Country:  r.Country,
-			Timezone: timezoneForCountry(r.Country),
-			Latency:  r.Latency,
-			Username: r.Proxy.Username,
-			Password: r.Proxy.Password,
+			ID:          id,
+			IP:          r.Proxy.IP,
+			Port:        r.Proxy.Port,
+			Protocol:    r.Proxy.Protocol,
+			Country:     r.Country,
+			Timezone:    timezoneForCountry(r.Country),
+			Latency:     r.Latency,
+			Username:    r.Proxy.Username,
+			Password:    r.Proxy.Password,
+			APIKeyIndex: r.Proxy.APIKeyIndex,
 		})
 	}
 

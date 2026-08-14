@@ -285,6 +285,28 @@ func (db *DB) TodayCaptchaCount() (int, error) {
 	return count, err
 }
 
+// TodayCaptchaCountByEngine returns CAPTCHA hits today for a specific engine.
+func (db *DB) TodayCaptchaCountByEngine(engine string) (int, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM tasks
+		 WHERE status='captcha' AND engine=? AND date(created_at) = date('now')`,
+		engine,
+	).Scan(&count)
+	return count, err
+}
+
+// TodayTaskCountByEngine returns task count today for a specific engine.
+func (db *DB) TodayTaskCountByEngine(engine string) (int, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM tasks
+		 WHERE engine=? AND date(created_at) = date('now')`,
+		engine,
+	).Scan(&count)
+	return count, err
+}
+
 // TodaySuccessCount returns the number of successful tasks today.
 func (db *DB) TodaySuccessCount() (int, error) {
 	var count int

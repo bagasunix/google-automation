@@ -238,16 +238,27 @@ async def parse_bing_serp(page) -> list[SerpResult]:
 
     Bing organic results are in li.b_algo containers, each with an h2 > a link.
     """
+    # Wait for results to appear before parsing
+    try:
+        await page.wait_for_selector("li.b_algo, li.b_algoSite, #b_results", timeout=8000)
+    except Exception:
+        pass  # Continue anyway — might still have results
+
     raw_results = await page.evaluate("""
         () => {
             const results = [];
-            const blocks = document.querySelectorAll('li.b_algo, li.b_algoSite');
+            // Try primary selectors first, fallback to broader selectors
+            let blocks = document.querySelectorAll('li.b_algo, li.b_algoSite');
+            if (blocks.length === 0) {
+                // Fallback: any list item with an h2 link in results area
+                blocks = document.querySelectorAll('#b_results li');
+            }
             blocks.forEach((block, idx) => {
                 const link = block.querySelector('h2 a, a.tilk');
                 const titleEl = block.querySelector('h2');
                 const snippetEl = block.querySelector('.b_caption p, p');
 
-                if (link) {
+                if (link && link.href && link.href.startsWith('http')) {
                     results.push({
                         index: idx,
                         href: link.href,
@@ -275,6 +286,18 @@ async def parse_bing_serp(page) -> list[SerpResult]:
         ))
 
     logger.info("Parsed %d Bing SERP results", len(results))
+    if len(results) == 0:
+        try:
+            import os, time as _time
+            page_url = page.url
+            page_title = await page.title()
+            logger.warning("0 Bing results — URL: %s | Title: %s", page_url[:120], page_title[:80])
+            os.makedirs("/home/bagasunix/Project/google-automation/screenshots", exist_ok=True)
+            path = f"/home/bagasunix/Project/google-automation/screenshots/debug_bing_0results_{int(_time.time())}.png"
+            await page.screenshot(path=path, full_page=False)
+            logger.warning("0 Bing results — debug screenshot: %s", path)
+        except Exception as e:
+            logger.warning("Debug screenshot failed: %s", e)
     return results
 
 
@@ -388,21 +411,44 @@ async def _attach_element_handles(page, results: list[SerpResult], engine: str) 
 
 
 async def _go_to_page_2(page, engine: str) -> bool:
-    """Click the 'Next' / page 2 navigation link on the SERP."""
+    """Navigate to page 2 of the SERP."""
     try:
         if engine == "google":
-            # Google's pagination: td a[href] in the navigation table
             next_btn = await page.query_selector("a#pnnext, td a.fl[href*='start=10']")
             if next_btn:
                 await human_click_element(page, next_btn)
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                await asyncio.sleep(1.5)
                 return True
         else:
-            # Bing's pagination
-            next_btn = await page.query_selector("a.sb_pagN, a[title='Next page']")
+            # Bing: build page 2 URL directly from current URL to avoid
+            # accidentally clicking redirect/suggest links instead of Next button.
+            current_url = page.url
+            if "bing.com/search" in current_url:
+                # Remove any existing pagination params and add first=11
+                import urllib.parse
+                parsed = urllib.parse.urlparse(current_url)
+                params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+                # Remove redirect params that cause empty results
+                for k in ["rdr", "rdrig", "first", "search", "form"]:
+                    params.pop(k, None)
+                params["first"] = ["11"]
+                params["FORM"] = ["PERE"]
+                new_query = urllib.parse.urlencode(
+                    {k: v[0] for k, v in params.items()}
+                )
+                page2_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+                await page.goto(page2_url, wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(2.0)
+                return True
+            # Fallback: try clicking Next button
+            next_btn = await page.query_selector(
+                "a.sb_pagN, a[title='Next page'], a[aria-label='Next page']"
+            )
             if next_btn:
                 await human_click_element(page, next_btn)
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                await asyncio.sleep(1.5)
                 return True
     except Exception as e:
         logger.warning("Error navigating to page 2: %s", e)
@@ -484,11 +530,11 @@ async def click_target_with_variation(
 
         if competitor:
             await human_click_element(page, competitor)
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
             await random_pause(10, 20)  # dwell on competitor page
             # Go back to SERP
             await page.go_back()
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
             await random_pause(1, 3)
             # Now click target
             await human_click_element(page, target_result.element_ref)
@@ -499,7 +545,7 @@ async def click_target_with_variation(
 
     # Wait for the target page to load after clicking
     try:
-        await page.wait_for_load_state("networkidle", timeout=20000)
+        await page.wait_for_load_state("domcontentloaded", timeout=20000)
     except Exception:
         logger.warning("Target page load timeout after SERP click — continuing")
 

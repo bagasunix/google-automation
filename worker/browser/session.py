@@ -148,6 +148,10 @@ class StealthSession:
 
         self._context = await self._browser.new_context(**context_options)
 
+        # Clear all storage to ensure fresh state per proxy — no cookies, cache,
+        # localStorage, sessionStorage, or IndexedDB carried over from previous session.
+        await self._context.clear_cookies()
+
         # Block font resources for speed (but keep images for engagement realism)
         async def _block_fonts(route):
             if route.request.resource_type == "font":

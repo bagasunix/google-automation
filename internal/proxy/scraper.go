@@ -13,20 +13,23 @@ import (
 
 // Proxy is a lightweight proxy descriptor used before persistence.
 type Proxy struct {
-	IP       string
-	Port     int
-	Protocol string
-	Country  string
+	IP          string
+	Port        int
+	Protocol    string
+	Country     string
 	// Auth credentials (for authenticated proxies like Webshare).
-	Username string
-	Password string
+	Username    string
+	Password    string
+	// APIKeyIndex tracks which Webshare API key this proxy came from.
+	APIKeyIndex int
 }
 
 // Scraper fetches free proxy lists from multiple sources.
 type Scraper struct {
-	client         *http.Client
-	sources        []string
-	webshareAPIKey string
+	client          *http.Client
+	sources         []string
+	webshareAPIKey  string   // legacy single key
+	webshareAPIKeys []string // multi-key rotation
 }
 
 // NewScraper creates a scraper for the given source URLs.
@@ -48,6 +51,34 @@ func NewScraperWithWebshare(sources []string, webshareKey string) *Scraper {
 		sources:        sources,
 		webshareAPIKey: webshareKey,
 	}
+}
+
+// NewScraperWithWebshareKeys creates a scraper with multiple Webshare API keys.
+func NewScraperWithWebshareKeys(sources []string, keys []string) *Scraper {
+	return &Scraper{
+		client: &http.Client{
+			Timeout: 20 * time.Second,
+		},
+		sources:         sources,
+		webshareAPIKeys: keys,
+	}
+}
+
+// allWebshareKeys returns all configured Webshare keys (merged from single + multi).
+func (s *Scraper) allWebshareKeys() []string {
+	seen := make(map[string]bool)
+	var keys []string
+	if s.webshareAPIKey != "" && !seen[s.webshareAPIKey] {
+		keys = append(keys, s.webshareAPIKey)
+		seen[s.webshareAPIKey] = true
+	}
+	for _, k := range s.webshareAPIKeys {
+		if k != "" && !seen[k] {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	return keys
 }
 
 // Scrape collects proxies from all configured sources concurrently using goroutines,
@@ -84,20 +115,20 @@ func (s *Scraper) Scrape() ([]Proxy, error) {
 		}(src)
 	}
 
-	// Launch Webshare scraper in parallel if API key is configured.
-	if s.webshareAPIKey != "" {
+	// Launch Webshare scraper for each configured API key.
+	for keyIdx, apiKey := range s.allWebshareKeys() {
 		wg.Add(1)
-		go func() {
+		go func(idx int, key string) {
 			defer wg.Done()
-			proxies, err := s.scrapeWebshare()
+			proxies, err := s.scrapeWebshareWithKey(key, idx)
 			mu.Lock()
 			results = append(results, scrapeResult{
-				source:  "webshare.io API",
+				source:  fmt.Sprintf("webshare.io API (key#%d)", idx),
 				proxies: proxies,
 				err:     err,
 			})
 			mu.Unlock()
-		}()
+		}(keyIdx, apiKey)
 	}
 	wg.Wait()
 
@@ -287,17 +318,21 @@ func parseGenericJSON(text string) []Proxy {
 // Webshare API
 // ---------------------------------------------------------------------------
 
-// scrapeWebshare fetches authenticated proxies from the Webshare API v2.
-// These are datacenter proxies (free tier: 10 proxies) that require
-// username:password authentication.
+// scrapeWebshare fetches using the single legacy key (backward compat).
 func (s *Scraper) scrapeWebshare() ([]Proxy, error) {
+	return s.scrapeWebshareWithKey(s.webshareAPIKey, 0)
+}
+
+// scrapeWebshareWithKey fetches proxies from Webshare API v2 using a specific key.
+// keyIndex is stored on each proxy so the pool knows which key it came from.
+func (s *Scraper) scrapeWebshareWithKey(apiKey string, keyIndex int) ([]Proxy, error) {
 	url := "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=100"
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Token "+s.webshareAPIKey)
+	req.Header.Set("Authorization", "Token "+apiKey)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -335,9 +370,10 @@ func (s *Scraper) scrapeWebshare() ([]Proxy, error) {
 			continue
 		}
 		p := Proxy{
-			IP:       ips[i][1],
-			Port:     port,
-			Protocol: "http",
+			IP:          ips[i][1],
+			Port:        port,
+			Protocol:    "http",
+			APIKeyIndex: keyIndex,
 		}
 		if i < len(users) {
 			p.Username = users[i][1]

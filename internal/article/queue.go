@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"google-automation/internal/config"
@@ -75,7 +76,10 @@ func NewQueue(db *storage.DB) *Queue {
 
 // RefreshArticles re-scrapes all configured domains for articles and persists
 // them to the database. This is called on startup and at the configured interval.
+// Extraction is parallelized with a semaphore (max 20 concurrent HTTP fetches).
 func (q *Queue) RefreshArticles(domains []string) error {
+	const maxConcurrent = 20
+
 	for _, domain := range domains {
 		log.Printf("[article-queue] collecting articles for %s", domain)
 		urls, err := q.collector.Collect(domain)
@@ -84,28 +88,60 @@ func (q *Queue) RefreshArticles(domains []string) error {
 			continue
 		}
 
-		saved := 0
+		// Filter article URLs first.
+		var articleURLs []SitemapURL
 		for _, u := range urls {
-			if !IsArticleURL(u.Loc) {
+			if IsArticleURL(u.Loc) {
+				articleURLs = append(articleURLs, u)
+			}
+		}
+		log.Printf("[article-queue] %s: found %d article URLs, extracting metadata (parallel)...", domain, len(articleURLs))
+
+		type result struct {
+			art *storage.Article
+			err error
+		}
+
+		sem := make(chan struct{}, maxConcurrent)
+		results := make(chan result, len(articleURLs))
+		var wg sync.WaitGroup
+
+		for _, u := range articleURLs {
+			wg.Add(1)
+			go func(loc string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				extracted, err := q.extractor.Extract(loc)
+				if err != nil {
+					results <- result{err: fmt.Errorf("%s: %w", loc, err)}
+					return
+				}
+				results <- result{art: &storage.Article{
+					Domain:   domain,
+					URL:      extracted.URL,
+					Title:    extracted.Title,
+					MetaDesc: extracted.MetaDesc,
+					Topic:    extracted.Topic,
+				}}
+			}(u.Loc)
+		}
+
+		// Close results channel after all goroutines finish.
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		saved := 0
+		for r := range results {
+			if r.err != nil {
+				log.Printf("[article-queue] extract failed: %v", r.err)
 				continue
 			}
-
-			// Extract metadata from the article page.
-			extracted, err := q.extractor.Extract(u.Loc)
-			if err != nil {
-				log.Printf("[article-queue] extract failed for %s: %v", u.Loc, err)
-				continue
-			}
-
-			art := &storage.Article{
-				Domain:  domain,
-				URL:     extracted.URL,
-				Title:   extracted.Title,
-				MetaDesc: extracted.MetaDesc,
-				Topic:   extracted.Topic,
-			}
-			if _, err := q.db.UpsertArticle(art); err != nil {
-				log.Printf("[article-queue] upsert failed for %s: %v", u.Loc, err)
+			if _, err := q.db.UpsertArticle(r.art); err != nil {
+				log.Printf("[article-queue] upsert failed for %s: %v", r.art.URL, err)
 				continue
 			}
 			saved++

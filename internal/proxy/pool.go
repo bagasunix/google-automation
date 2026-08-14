@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -27,16 +28,19 @@ type Pool struct {
 
 // PooledProxy is a proxy enriched with health-check metadata and a DB ID.
 type PooledProxy struct {
-	ID       int64
-	IP       string
-	Port     int
-	Protocol string
-	Country  string
-	Timezone string
-	Latency  time.Duration
-	// Auth credentials (for authenticated proxies like Webshare).
-	Username string
-	Password string
+	ID          int64
+	IP          string
+	Port        int
+	Protocol    string
+	Country     string
+	Timezone    string
+	Latency     time.Duration
+	// Auth credentials (for authenticated proxies like Webshare).\
+	Username    string
+	Password    string
+	// APIKeyIndex tracks which Webshare API key this proxy came from.
+	// Used for key rotation: exhaust all proxies from key #0 before key #1.
+	APIKeyIndex int
 }
 
 // NewPool creates an empty proxy pool.
@@ -48,6 +52,7 @@ func NewPool() *Pool {
 
 // Load replaces the pool contents with a fresh batch of health-checked proxies.
 // This is called after each scrape+healthcheck cycle. Resets the cycle.
+// Proxies are sorted by APIKeyIndex so key #0 is always exhausted before key #1.
 func (p *Pool) Load(proxies []PooledProxy) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -60,6 +65,13 @@ func (p *Pool) Load(proxies []PooledProxy) {
 		}
 		p.available = append(p.available, px)
 	}
+
+	// Sort by APIKeyIndex ascending — key #0 proxies are always used first.
+	// Within same key, order is preserved (stable sort).
+	sort.SliceStable(p.available, func(i, j int) bool {
+		return p.available[i].APIKeyIndex < p.available[j].APIKeyIndex
+	})
+
 	p.usedThisCycle = nil
 	p.allKnown = proxies
 

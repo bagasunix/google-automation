@@ -4,14 +4,14 @@ engagement/click.py
 Internal link click simulation during engagement.
 
 Responsibilities:
-  - 50% chance: click 1 internal link on the article page
-  - Read the linked page for 20-40s + scroll
-  - Navigate back to the original article (not close)
+  - Always click 1-2 internal links after reading the main article
+  - For each internal article: full simulate_reading (scroll, pause at headings,
+    code blocks, images) — same as the main article, not a quick skim
+  - Navigate back to the original article after each internal read
   - Mouse movement: bezier curve to the link
-  - Up to 2 internal link clicks total
 
-The goal is to simulate a reader who follows a related link, reads it briefly,
-then returns to the original article — common real-user behavior.
+The goal is to simulate a real reader who finishes the article, then follows
+related links — reading each one properly before going back.
 """
 
 from __future__ import annotations
@@ -19,16 +19,13 @@ from __future__ import annotations
 import asyncio
 import random
 import logging
-from typing import Tuple
 from urllib.parse import urlparse
 
 from browser.humanizer import (
     human_scroll,
     human_click_element,
     random_pause,
-    mouse_bezier,
     random_mouse_jitter,
-    get_scroll_depth_percent,
 )
 
 logger = logging.getLogger("worker.engagement.click")
@@ -43,7 +40,6 @@ async def _find_internal_links(page, target_domain: str, limit: int = 10) -> lis
 
     Returns a list of Playwright ElementHandles.
     """
-    # Query all links and filter in-page (JS) for domain match + in-content
     all_links = await page.query_selector_all("a[href]")
 
     internal_links = []
@@ -55,16 +51,13 @@ async def _find_internal_links(page, target_domain: str, limit: int = 10) -> lis
             if not href or href.startswith("#") or href.startswith("javascript:"):
                 continue
 
-            # Resolve relative URLs
             href_domain = urlparse(href).netloc.lower().lstrip("www.")
             if not href_domain:
-                # Relative link — same domain
                 href_domain = target_domain_clean
             if target_domain_clean not in href_domain:
                 continue
 
-            # Skip if link is in nav/footer/sidebar (likely not in-content)
-            # Check if the link is inside an <article>, <main>, or .content div
+            # Skip nav/footer/sidebar links
             is_in_content = await link.evaluate("""
                 (el) => {
                     const contentParents = el.closest('article, main, .post-content, .entry-content, .content, .post-body, .article-body');
@@ -74,7 +67,6 @@ async def _find_internal_links(page, target_domain: str, limit: int = 10) -> lis
             """)
 
             if is_in_content:
-                # Check if the link has visible text (not just an image/icon)
                 text = await link.inner_text()
                 if text and len(text.strip()) > 3:
                     internal_links.append(link)
@@ -90,41 +82,43 @@ async def _find_internal_links(page, target_domain: str, limit: int = 10) -> lis
 
 async def simulate_internal_clicks(page, target_domain: str) -> int:
     """
-    Simulate clicking internal links on the article page.
+    Simulate clicking 1-2 internal links on the article page.
 
     Behavior:
-      - 50% chance: click at least 1 internal link
-      - If first click happens: 30% chance of a second click
-      - Max 2 internal link clicks total
-      - After each click: read linked page 20-40s + scroll, then go back
+      - Always attempt to click 1-2 internal articles (human-like behavior)
+      - For each: full reading simulation (scroll, pause at headings, etc.)
+      - Navigate back to original article after each read
 
     Returns the number of internal clicks performed.
     """
-    # 50% chance of any internal clicking
-    if random.random() > 0.50:
-        logger.info("No internal clicks this session (50% skip)")
-        return 0
+    # Import here to avoid circular dependency
+    from engagement.dwell import simulate_reading
 
+    # Always click 1-2 articles — this is natural reading behavior
+    target_clicks = random.randint(1, 2)
     clicks = 0
-    max_clicks = 2
 
     # Find internal links
     links = await _find_internal_links(page, target_domain)
     if not links:
-        logger.info("No internal links found — skipping click simulation")
+        logger.info("No internal links found — skipping internal click simulation")
         return 0
 
-    # Store current URL so we can navigate back
+    # Store original URL to navigate back
     original_url = page.url
 
-    while clicks < max_clicks and links:
-        # Pick a random internal link (not the first one always)
+    while clicks < target_clicks and links:
+        # Scroll a bit before clicking — like a reader scanning the page for the next link
+        await human_scroll(page, random.randint(100, 300))
+        await random_pause(2, 5)
+
+        # Pick a random internal link
         link = random.choice(links)
-        links.remove(link)  # don't click the same link twice
+        links.remove(link)
 
-        logger.info("Clicking internal link #%d", clicks + 1)
+        logger.info("Clicking internal link #%d of %d", clicks + 1, target_clicks)
 
-        # Move mouse to the link and click
+        # Move mouse naturally to the link and click
         success = await human_click_element(page, link)
         if not success:
             logger.warning("Failed to click internal link — trying next")
@@ -133,55 +127,41 @@ async def simulate_internal_clicks(page, target_domain: str) -> int:
         # Wait for the linked page to load
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            await asyncio.sleep(random.uniform(1, 3))
+            await asyncio.sleep(random.uniform(1.5, 3.0))
         except Exception as e:
             logger.warning("Internal link page load timeout: %s", e)
 
-        # --- Read the linked page ---
-        reading_time = random.uniform(20, 40)
-        logger.info("Reading linked page for %.1fs", reading_time)
-
-        # Initial pause (scanning)
-        await random_pause(3, 8)
-
-        # Scroll while reading
-        await human_scroll(page, random.randint(300, 800))
-
-        # Mouse movement (natural browsing)
-        await random_mouse_jitter(page, duration_s=random.uniform(2, 5))
-
-        # Remaining reading time
-        elapsed = 3 + 8 + 3  # approx
-        remaining = max(0, reading_time - elapsed)
-        if remaining > 0:
-            await asyncio.sleep(remaining * 0.5)
-
-        # More scrolling
-        await human_scroll(page, random.randint(200, 500))
-        await asyncio.sleep(remaining * 0.5)
+        # --- Full reading simulation on the internal article ---
+        logger.info("Reading internal article (full simulation)...")
+        try:
+            dwell, depth = await simulate_reading(page, target_domain)
+            logger.info("Internal article: dwell=%ds scroll=%d%%", dwell, depth)
+        except Exception as e:
+            logger.warning("Reading simulation failed on internal article: %s", e)
+            # Fallback: simple pause + scroll
+            await random_pause(20, 40)
+            await human_scroll(page, random.randint(300, 700))
 
         clicks += 1
 
-        # 30% chance of another click (if we haven't hit max)
-        if clicks < max_clicks and random.random() < 0.30 and links:
-            logger.info("Decided to click another internal link (30%% chance)")
-            # Navigate back to original article first
+        # Navigate back to original article
+        logger.info("Going back to original article after internal read")
+        try:
             await page.go_back()
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            await asyncio.sleep(random.uniform(1, 2))
+        except Exception as e:
+            logger.warning("Failed to go back: %s — navigating directly", e)
             try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                await page.goto(original_url, wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(random.uniform(1, 2))
             except Exception:
-                pass
-            await random_pause(1, 3)
-        else:
-            # Go back to the original article
-            logger.info("Going back to original article")
-            await page.go_back()
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            except Exception:
-                pass
-            await random_pause(2, 5)
-            break
+                break
 
-    logger.info("Internal click simulation complete: %d clicks", clicks)
+        # Small pause on original article before potentially clicking another link
+        if clicks < target_clicks and links:
+            await random_pause(3, 8)
+            await random_mouse_jitter(page, duration_s=random.uniform(1, 3))
+
+    logger.info("Internal click simulation done: %d clicks performed", clicks)
     return clicks

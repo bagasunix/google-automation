@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from typing import Optional
 
 from browser.humanizer import (
@@ -33,6 +34,7 @@ from browser.humanizer import (
     random_pause,
     random_mouse_jitter,
     human_scroll,
+    human_click_element,
 )
 from search.serp import (
     SerpResult,
@@ -63,6 +65,27 @@ async def navigate_to_google(page) -> None:
 
     await page.goto(GOOGLE_URL, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(random.uniform(0.5, 1.5))
+
+    # Dismiss Google consent / cookie banner if present.
+    # The banner (div.eLZYyf) intercepts pointer events on the search box.
+    consent_selectors = [
+        "button#L2AGLb",          # "Accept all" (English)
+        "button#W0wltc",          # "Reject all"
+        "div.eLZYyf button",      # generic overlay button
+        "form[action*='consent'] button",
+        "[aria-label='Accept all']",
+        "[aria-label='Agree']",
+    ]
+    for sel in consent_selectors:
+        try:
+            btn = await page.query_selector(sel)
+            if btn:
+                await human_click_element(page, btn)
+                logger.info("Dismissed Google consent banner via: %s", sel)
+                await asyncio.sleep(random.uniform(0.8, 1.5))
+                break
+        except Exception:
+            continue
 
     # Wait for the search box to appear
     search_found = False

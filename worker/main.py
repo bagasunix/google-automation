@@ -345,7 +345,7 @@ async def _browse_serp_casually(page, engine: str, target_domain: str) -> None:
     Browse the SERP casually during pre-search:
       - Scroll through results (200-600px)
       - Read snippets (5-15s)
-      - 50% chance: click a random non-target result, dwell, go back
+      - 50% chance: click a random non-target result, dwell properly, go back
     """
     logger.info("Casually browsing SERP (pre-search)")
 
@@ -376,22 +376,44 @@ async def _browse_serp_casually(page, engine: str, target_domain: str) -> None:
             if non_target_links:
                 random_link = random.choice(non_target_links)
                 from browser.humanizer import human_click_element
-                await human_click_element(page, random_link)
+                clicked = await human_click_element(page, random_link)
 
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
+                if clicked:
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        await asyncio.sleep(random.uniform(1.5, 3.0))
+                    except Exception:
+                        pass
 
-                await random_pause(5, 15)
-                await human_scroll(page, random.randint(200, 400))
+                    # === Proper dwell — like a real human reading the page ===
+                    # Initial scan
+                    await random_pause(5, 12)
+                    await random_mouse_jitter(page, duration_s=random.uniform(1, 3))
 
-                await page.go_back()
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
-                await random_pause(1, 3)
+                    # Scroll down in chunks — reading the article
+                    scroll_steps = random.randint(3, 6)
+                    for _ in range(scroll_steps):
+                        await human_scroll(page, random.randint(200, 400))
+                        await random_pause(3, 8)
+
+                    # Scroll back up a bit (re-reading)
+                    if random.random() < 0.4:
+                        await human_scroll(page, -random.randint(150, 300))
+                        await random_pause(2, 5)
+
+                    # Final pause before leaving
+                    await random_pause(3, 8)
+                    await random_mouse_jitter(page, duration_s=random.uniform(1, 2))
+
+                    logger.info("Done reading casual result — going back to SERP")
+                    await page.go_back()
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        await asyncio.sleep(random.uniform(1, 2))
+                    except Exception:
+                        pass
+                    await random_pause(1, 3)
+
         except Exception as e:
             logger.warning("Error during casual SERP browsing: %s", e)
 

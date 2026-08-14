@@ -19,8 +19,8 @@ type DB struct {
 // migrations. The modernc.org/sqlite driver is registered as "sqlite".
 func New(dbPath string) (*DB, error) {
 	// _pragma=foreign_keys(1) enables FK enforcement; _pragma=journal_mode(WAL)
-	// improves concurrency for the read-heavy scheduler loop.
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", dbPath)
+	// improves concurrency; _pragma=busy_timeout(5000) retries 5s before SQLITE_BUSY.
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)

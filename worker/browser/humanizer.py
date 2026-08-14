@@ -296,9 +296,14 @@ async def human_click(page, selector: str) -> bool:
 async def human_click_element(page, element) -> bool:
     """
     Click a Playwright ElementHandle (already located) in a human-like way.
+    Scrolls element into viewport first to avoid negative Y coordinates.
     Returns True if successful.
     """
     try:
+        # Scroll element into view first — ensures Y is always positive
+        await element.scroll_into_view_if_needed()
+        await asyncio.sleep(random.uniform(0.4, 1.0))
+
         box = await element.bounding_box()
         if not box:
             logger.warning("human_click_element: no bounding box")
@@ -306,6 +311,11 @@ async def human_click_element(page, element) -> bool:
 
         target_x = box["x"] + box["width"] / 2 + random.uniform(-5, 5)
         target_y = box["y"] + box["height"] / 2 + random.uniform(-5, 5)
+
+        # Sanity check — Y must be positive (in viewport)
+        if target_y < 0:
+            logger.warning("human_click_element: Y=%.0f still negative after scroll — skipping", target_y)
+            return False
 
         await mouse_bezier(page, target_x, target_y)
         await asyncio.sleep(random.uniform(0.3, 1.0))
