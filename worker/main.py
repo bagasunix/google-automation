@@ -132,6 +132,15 @@ async def execute_task(request) -> object:
     proxy_country = getattr(request, "proxy_country", "")
     proxy_timezone = getattr(request, "proxy_timezone", "")
 
+    # Bandwidth-saving behavior controls
+    pre_search_enabled = getattr(request, "pre_search_enabled", True)
+    pre_search_2_chance = getattr(request, "pre_search_2_chance", 0.0)
+    serp_casual_click_chance = getattr(request, "serp_casual_click_chance", 0.0)
+    competitor_click_chance = getattr(request, "competitor_click_chance", 0.0)
+    distraction_exit_chance = getattr(request, "distraction_exit_chance", 0.0)
+    serp_dwell_min = getattr(request, "serp_dwell_seconds_min", 2)
+    serp_dwell_max = getattr(request, "serp_dwell_seconds_max", 5)
+
     proxy_str = f"{proxy_ip}:{proxy_port}" if proxy_ip else "direct"
     if proxy_username:
         proxy_str += " (auth)"
@@ -171,7 +180,7 @@ async def execute_task(request) -> object:
         page = session.page
 
         # === Step 2: Pre-search #1 (topical query, NOT the article title) ===
-        if pre_search_queries:
+        if pre_search_enabled and pre_search_queries:
             pre_query_1 = pre_search_queries[0]
             logger.info("[Step 2] Pre-search #1: %s", pre_query_1)
 
@@ -185,13 +194,13 @@ async def execute_task(request) -> object:
                 raise RuntimeError(error_msg)
 
             # Browse the SERP (read snippets, scroll, maybe click a random result)
-            await _browse_serp_casually(page, engine, domain)
+            await _browse_serp_casually(page, engine, domain, serp_casual_click_chance)
 
             # Small pause between searches
             await random_pause(3, 8)
 
-            # === Step 3: Pre-search #2 (optional, 50% chance) ===
-            if len(pre_search_queries) > 1 and random.random() < 0.50:
+            # === Step 3: Pre-search #2 (configurable chance) ===
+            if len(pre_search_queries) > 1 and random.random() < pre_search_2_chance:
                 pre_query_2 = pre_search_queries[1]
                 logger.info("[Step 3] Pre-search #2: %s", pre_query_2)
 
@@ -204,12 +213,12 @@ async def execute_task(request) -> object:
                     await capture_screenshot(page, task_id, "captcha_presearch2")
                     raise RuntimeError(error_msg)
 
-                await _browse_serp_casually(page, engine, domain)
+                await _browse_serp_casually(page, engine, domain, serp_casual_click_chance)
                 await random_pause(3, 8)
             else:
-                logger.info("[Step 3] Pre-search #2 skipped (50%% chance)")
+                logger.info("[Step 3] Pre-search #2 skipped (chance=%.0f%%)", pre_search_2_chance * 100)
         else:
-            logger.info("[Step 2-3] No pre-search queries provided — skipping")
+            logger.info("[Step 2-3] Pre-search skipped (enabled=%s)", pre_search_enabled)
 
         # === Step 4: Target search (exact article title) ===
         logger.info("[Step 4] Target search: %s", article_title[:80])
@@ -241,9 +250,9 @@ async def execute_task(request) -> object:
 
             if target_result and target_result.element_ref:
                 if engine == "google":
-                    await google_click_target(page, target_result)
+                    await google_click_target(page, target_result, competitor_click_chance)
                 else:
-                    await bing_click_target(page, target_result)
+                    await bing_click_target(page, target_result, competitor_click_chance)
             else:
                 logger.warning("No element ref — trying to click target by URL")
                 await _click_target_by_url(page, article_url, engine)
@@ -269,7 +278,7 @@ async def execute_task(request) -> object:
 
                 # === Step 8: Exit strategy ===
                 logger.info("[Step 8] Exit strategy")
-                await exit_article(page, domain, session.context)
+                await exit_article(page, domain, session.context, distraction_exit_chance)
             else:
                 logger.warning("Did not land on target domain — URL: %s", current_url)
                 error_msg = f"Did not land on target article. URL: {current_url}"
@@ -349,14 +358,14 @@ async def _do_search(page, query: str, target_domain: str, engine: str) -> SerpS
         return await bing_search_flow(page, query, target_domain)
 
 
-async def _browse_serp_casually(page, engine: str, target_domain: str) -> None:
+async def _browse_serp_casually(page, engine: str, target_domain: str, casual_click_chance: float = 0.0) -> None:
     """
     Browse the SERP casually during pre-search:
       - Scroll through results (200-600px)
-      - Read snippets (5-15s)
-      - 50% chance: click a random non-target result, dwell properly, go back
+      - Read snippets (2-5s)
+      - casual_click_chance probability: click a random non-target result, dwell, go back
     """
-    logger.info("Casually browsing SERP (pre-search)")
+    logger.info("Casually browsing SERP (pre-search, click_chance=%.0f%%)", casual_click_chance * 100)
 
     await human_scroll(page, random.randint(200, 600))
     await random_pause(2, 5)
@@ -364,8 +373,10 @@ async def _browse_serp_casually(page, engine: str, target_domain: str) -> None:
     await human_scroll(page, random.randint(200, 400))
     await random_pause(3, 10)
 
-    # 50% chance: click a random result (browsing behavior)
-    if random.random() < 0.50:
+    if casual_click_chance <= 0:
+        return
+
+    if random.random() < casual_click_chance:
         logger.info("Clicking a random result during pre-search browsing")
         try:
             if engine == "google":

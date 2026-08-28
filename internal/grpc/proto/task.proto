@@ -20,6 +20,14 @@ message TaskRequest {
     string proxy_password = 10;         // auth for Webshare proxies
     string proxy_country = 11;          // proxy geo country (e.g. "GB", "US") for timezone/locale matching
     string proxy_timezone = 12;         // IANA timezone (e.g. "Europe/London") derived from proxy country
+    // Bandwidth-saving behavior controls (from scheduler config)
+    bool pre_search_enabled = 13;       // false = skip pre-search entirely
+    double pre_search_2_chance = 14;    // 0.0-1.0 probability of second pre-search
+    double serp_casual_click_chance = 15; // 0.0-1.0 probability of clicking random SERP result during browse
+    double competitor_click_chance = 16;  // 0.0-1.0 probability of clicking competitor before target
+    double distraction_exit_chance = 17;  // 0.0-1.0 probability of navigating to distraction site on exit
+    int32 serp_dwell_seconds_min = 18;   // min seconds reading SERP snippets
+    int32 serp_dwell_seconds_max = 19;   // max seconds reading SERP snippets
 }
 
 message TaskResponse {

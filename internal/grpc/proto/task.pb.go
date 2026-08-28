@@ -35,8 +35,16 @@ type TaskRequest struct {
 	ProxyPassword    string                 `protobuf:"bytes,10,opt,name=proxy_password,json=proxyPassword,proto3" json:"proxy_password,omitempty"` // auth for Webshare proxies
 	ProxyCountry     string                 `protobuf:"bytes,11,opt,name=proxy_country,json=proxyCountry,proto3" json:"proxy_country,omitempty"`    // proxy geo country (e.g. "GB", "US") for timezone/locale matching
 	ProxyTimezone    string                 `protobuf:"bytes,12,opt,name=proxy_timezone,json=proxyTimezone,proto3" json:"proxy_timezone,omitempty"` // IANA timezone (e.g. "Europe/London") derived from proxy country
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Bandwidth-saving behavior controls (from scheduler config)
+	PreSearchEnabled      bool    `protobuf:"varint,13,opt,name=pre_search_enabled,json=preSearchEnabled,proto3" json:"pre_search_enabled,omitempty"`                   // false = skip pre-search entirely
+	PreSearch_2Chance     float64 `protobuf:"fixed64,14,opt,name=pre_search_2_chance,json=preSearch2Chance,proto3" json:"pre_search_2_chance,omitempty"`                // 0.0-1.0 probability of second pre-search
+	SerpCasualClickChance float64 `protobuf:"fixed64,15,opt,name=serp_casual_click_chance,json=serpCasualClickChance,proto3" json:"serp_casual_click_chance,omitempty"` // 0.0-1.0 probability of clicking random SERP result during browse
+	CompetitorClickChance float64 `protobuf:"fixed64,16,opt,name=competitor_click_chance,json=competitorClickChance,proto3" json:"competitor_click_chance,omitempty"`   // 0.0-1.0 probability of clicking competitor before target
+	DistractionExitChance float64 `protobuf:"fixed64,17,opt,name=distraction_exit_chance,json=distractionExitChance,proto3" json:"distraction_exit_chance,omitempty"`   // 0.0-1.0 probability of navigating to distraction site on exit
+	SerpDwellSecondsMin   int32   `protobuf:"varint,18,opt,name=serp_dwell_seconds_min,json=serpDwellSecondsMin,proto3" json:"serp_dwell_seconds_min,omitempty"`        // min seconds reading SERP snippets
+	SerpDwellSecondsMax   int32   `protobuf:"varint,19,opt,name=serp_dwell_seconds_max,json=serpDwellSecondsMax,proto3" json:"serp_dwell_seconds_max,omitempty"`        // max seconds reading SERP snippets
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *TaskRequest) Reset() {
@@ -151,6 +159,55 @@ func (x *TaskRequest) GetProxyTimezone() string {
 		return x.ProxyTimezone
 	}
 	return ""
+}
+
+func (x *TaskRequest) GetPreSearchEnabled() bool {
+	if x != nil {
+		return x.PreSearchEnabled
+	}
+	return false
+}
+
+func (x *TaskRequest) GetPreSearch_2Chance() float64 {
+	if x != nil {
+		return x.PreSearch_2Chance
+	}
+	return 0
+}
+
+func (x *TaskRequest) GetSerpCasualClickChance() float64 {
+	if x != nil {
+		return x.SerpCasualClickChance
+	}
+	return 0
+}
+
+func (x *TaskRequest) GetCompetitorClickChance() float64 {
+	if x != nil {
+		return x.CompetitorClickChance
+	}
+	return 0
+}
+
+func (x *TaskRequest) GetDistractionExitChance() float64 {
+	if x != nil {
+		return x.DistractionExitChance
+	}
+	return 0
+}
+
+func (x *TaskRequest) GetSerpDwellSecondsMin() int32 {
+	if x != nil {
+		return x.SerpDwellSecondsMin
+	}
+	return 0
+}
+
+func (x *TaskRequest) GetSerpDwellSecondsMax() int32 {
+	if x != nil {
+		return x.SerpDwellSecondsMax
+	}
+	return 0
 }
 
 type TaskResponse struct {
@@ -281,7 +338,7 @@ var File_internal_grpc_proto_task_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_task_proto_rawDesc = "" +
 	"\n" +
-	"\x1einternal/grpc/proto/task.proto\x12\x10searchautomation\"\x9e\x03\n" +
+	"\x1einternal/grpc/proto/task.proto\x12\x10searchautomation\"\x8e\x06\n" +
 	"\vTaskRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12#\n" +
 	"\rarticle_title\x18\x02 \x01(\tR\farticleTitle\x12\x1f\n" +
@@ -297,7 +354,14 @@ const file_internal_grpc_proto_task_proto_rawDesc = "" +
 	"\x0eproxy_password\x18\n" +
 	" \x01(\tR\rproxyPassword\x12#\n" +
 	"\rproxy_country\x18\v \x01(\tR\fproxyCountry\x12%\n" +
-	"\x0eproxy_timezone\x18\f \x01(\tR\rproxyTimezone\"\x89\x03\n" +
+	"\x0eproxy_timezone\x18\f \x01(\tR\rproxyTimezone\x12,\n" +
+	"\x12pre_search_enabled\x18\r \x01(\bR\x10preSearchEnabled\x12-\n" +
+	"\x13pre_search_2_chance\x18\x0e \x01(\x01R\x10preSearch2Chance\x127\n" +
+	"\x18serp_casual_click_chance\x18\x0f \x01(\x01R\x15serpCasualClickChance\x126\n" +
+	"\x17competitor_click_chance\x18\x10 \x01(\x01R\x15competitorClickChance\x126\n" +
+	"\x17distraction_exit_chance\x18\x11 \x01(\x01R\x15distractionExitChance\x123\n" +
+	"\x16serp_dwell_seconds_min\x18\x12 \x01(\x05R\x13serpDwellSecondsMin\x123\n" +
+	"\x16serp_dwell_seconds_max\x18\x13 \x01(\x05R\x13serpDwellSecondsMax\"\x89\x03\n" +
 	"\fTaskResponse\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x16\n" +

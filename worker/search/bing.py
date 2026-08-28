@@ -228,10 +228,10 @@ async def bing_search_flow(
 async def bing_click_target(
     page,
     target_result: SerpResult,
+    competitor_click_chance: float = 0.0,
 ) -> None:
     """
     Click the target result on the Bing SERP with variation strategy.
-
     Delegates to serp.click_target_with_variation().
     """
-    await click_target_with_variation(page, target_result, engine="bing")
+    await click_target_with_variation(page, target_result, engine="bing", competitor_click_chance=competitor_click_chance)

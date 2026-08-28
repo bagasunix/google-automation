@@ -19,6 +19,14 @@ scheduler:
   post_exit_cooldown_max: 15       # testing: diperkecil
   active_hours_start: 0            # testing: semua jam aktif
   active_hours_end: 24             # testing: semua jam aktif
+  # --- Bandwidth controls (balance: hemat tapi tetap human-like) ---
+  pre_search_enabled: true         # false = skip pre-search entirely (hemat ~1 MB/task)
+  pre_search_2_chance: 0.25        # 25% chance second pre-search (cukup variasi, gak boros)
+  serp_casual_click_chance: 0.15   # 15% klik random result di SERP (kadang browsing)
+  competitor_click_chance: 0.10    # 10% klik competitor dulu (kadang compare)
+  distraction_exit_chance: 0.05    # 5% exit ke distraction site (kadang terdistraksi)
+  serp_dwell_seconds_min: 2        # min time reading SERP snippets before clicking
+  serp_dwell_seconds_max: 5        # max time reading SERP snippets
 
 proxy:
   refresh_interval_hours: 3

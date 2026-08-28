@@ -43,19 +43,30 @@ async def exit_article(
     page,
     target_domain: str = "",
     context=None,
+    distraction_exit_chance: float = 0.0,
 ) -> str:
     """
     Execute an exit strategy after reading the article.
 
     Args:
-        page:     The Playwright Page currently on the article
-        domain:   The article's domain (for homepage navigation)
-        context:  The BrowserContext (for closing tabs)
+        page:             The Playwright Page currently on the article
+        domain:           The article's domain (for homepage navigation)
+        context:          The BrowserContext (for closing tabs)
+        distraction_exit_chance: 0.0-1.0 probability of navigating to a
+                                  distraction site (default 0 = disabled, saves bandwidth)
 
     Returns:
         The exit method used: "close", "back", "homepage", "navigate"
     """
     strategy = random.random()
+
+    # Adjust thresholds based on distraction_exit_chance.
+    # close 30%, back 40%, homepage 30%-X, navigate X
+    navigate_thresh = 1.0 - distraction_exit_chance
+    homepage_thresh = navigate_thresh - (navigate_thresh * 0.3 / (0.3 + 0.4))
+    # Effectively: close 30%, back 40%, homepage (30%-X)%, navigate X%
+    # If distraction=0: close 30%, back 40%, homepage 30%
+
     exit_method = ""
 
     if strategy < 0.30:
@@ -100,8 +111,8 @@ async def exit_article(
         except Exception as e:
             logger.warning("Error going back: %s", e)
 
-    elif strategy < 0.90:
-        # --- 20%: Navigate to the site's homepage ---
+    elif strategy < homepage_thresh:
+        # --- Homepage: navigate to the site's homepage ---
         exit_method = "homepage"
         logger.info("Exit strategy: navigate to homepage")
 

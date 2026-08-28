@@ -473,18 +473,18 @@ async def click_target_with_variation(
     page,
     target_result: SerpResult,
     engine: str = "google",
+    competitor_click_chance: float = 0.0,
 ) -> None:
     """
     Click the target result with position-variation strategy.
 
-    Strategies (per the design spec):
-      50% chance: Direct click (but with 3-8s delay reading snippet first)
-      30% chance: Scroll past target position first, read other results (5-10s),
-                   scroll back up, then click target
-      20% chance: Click a competitor result above target, dwell 10-20s,
-                   back to Google, then click target
-
-    This simulates real user comparison/browsing behavior before clicking.
+    Strategies (configurable via competitor_click_chance):
+      If competitor_click_chance > 0:
+        (1-competitor_click_chance)/2 chance: Direct click (read snippet first)
+        (1-competitor_click_chance)/2 chance: Scroll past target, read, scroll back, click
+        competitor_click_chance: Click competitor first, dwell, back, click target
+      If competitor_click_chance == 0:
+        60% direct click, 40% scroll past + back (no competitor click — saves bandwidth)
     """
     if not target_result.element_ref:
         logger.warning("No element ref for target result — falling back to direct click")
@@ -493,30 +493,33 @@ async def click_target_with_variation(
         return
 
     strategy = random.random()
-    logger.info("SERP click strategy: %s (roll=%.2f)", "direct" if strategy < 0.5 else
-                "scroll_past" if strategy < 0.8 else "competitor_first", strategy)
 
-    if strategy < 0.5:
-        # --- Strategy 1: Direct click (50%) ---
-        # Read the snippet for 3-8s before clicking
-        logger.info("Strategy: direct click with 3-8s read delay")
+    if competitor_click_chance > 0:
+        # 3-way split: direct / scroll_past / competitor
+        direct_thresh = (1 - competitor_click_chance) * 0.5
+        scroll_thresh = (1 - competitor_click_chance)
+    else:
+        # 2-way split: 60% direct, 40% scroll past (no competitor — save bandwidth)
+        direct_thresh = 0.6
+        scroll_thresh = 1.0
+
+    if strategy < direct_thresh:
+        # --- Strategy 1: Direct click ---
+        logger.info("Strategy: direct click with read delay")
         await random_pause(3, 8)
         await human_click_element(page, target_result.element_ref)
 
-    elif strategy < 0.8:
-        # --- Strategy 2: Scroll past target, read, scroll back, click (30%) ---
+    elif strategy < scroll_thresh:
+        # --- Strategy 2: Scroll past target, read, scroll back, click ---
         logger.info("Strategy: scroll past target then back")
-        # Scroll down past the target position
         await human_scroll(page, random.randint(400, 800))
-        await random_pause(5, 10)  # read other results
-        # Scroll back up
+        await random_pause(5, 10)
         await page.evaluate("() => window.scrollTo(0, 0)")
         await random_pause(1, 3)
-        # Now click target
         await human_click_element(page, target_result.element_ref)
 
     else:
-        # --- Strategy 3: Click competitor first, back to SERP, click target (20%) ---
+        # --- Strategy 3: Click competitor first, back to SERP, click target ---
         logger.info("Strategy: competitor first then back")
         # Find a competitor result above the target
         competitor = None

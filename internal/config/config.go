@@ -27,16 +27,23 @@ type EngineRatio struct {
 
 // SchedulerConfig holds all scheduler-related tuning knobs.
 type SchedulerConfig struct {
-	MaxSearchPerProxy   int `yaml:"max_search_per_proxy"`
-	NewArticleBoost     int `yaml:"new_article_boost"`
-	RegularMax          int `yaml:"regular_max"`
-	CaptchaPauseHours   int `yaml:"captcha_pause_hours"`
-	MinCooldownSeconds  int `yaml:"min_cooldown_seconds"`
-	MaxCooldownSeconds  int `yaml:"max_cooldown_seconds"`
-	PostExitCooldownMin int `yaml:"post_exit_cooldown_min"`
-	PostExitCooldownMax int `yaml:"post_exit_cooldown_max"`
-	ActiveHoursStart    int `yaml:"active_hours_start"`
-	ActiveHoursEnd      int `yaml:"active_hours_end"`
+	MaxSearchPerProxy        int     `yaml:"max_search_per_proxy"`
+	NewArticleBoost         int     `yaml:"new_article_boost"`
+	RegularMax              int     `yaml:"regular_max"`
+	CaptchaPauseHours       int     `yaml:"captcha_pause_hours"`
+	MinCooldownSeconds      int     `yaml:"min_cooldown_seconds"`
+	MaxCooldownSeconds      int     `yaml:"max_cooldown_seconds"`
+	PostExitCooldownMin     int     `yaml:"post_exit_cooldown_min"`
+	PostExitCooldownMax     int     `yaml:"post_exit_cooldown_max"`
+	ActiveHoursStart        int     `yaml:"active_hours_start"`
+	ActiveHoursEnd          int     `yaml:"active_hours_end"`
+	PreSearchEnabled        bool    `yaml:"pre_search_enabled"`
+	PreSearch2Chance        float64 `yaml:"pre_search_2_chance"`
+	SerpCasualClickChance   float64 `yaml:"serp_casual_click_chance"`
+	CompetitorClickChance   float64 `yaml:"competitor_click_chance"`
+	DistractionExitChance   float64 `yaml:"distraction_exit_chance"`
+	SerpDwellSecondsMin     int     `yaml:"serp_dwell_seconds_min"`
+	SerpDwellSecondsMax     int     `yaml:"serp_dwell_seconds_max"`
 }
 
 // ProxyConfig configures proxy scraping and health checking.
@@ -145,5 +152,19 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Bandwidth.WarnThresholdPercent == 0 {
 		c.Bandwidth.WarnThresholdPercent = 80
+	}
+	// Bandwidth-saving defaults: irit maksimal unless explicitly enabled
+	if !c.Scheduler.PreSearchEnabled && c.Scheduler.PreSearch2Chance == 0 {
+		// Only default if the field wasn't set in YAML at all.
+		// If pre_search_enabled is explicitly false, we respect it.
+	}
+	if c.Scheduler.PreSearch2Chance == 0 && c.Scheduler.SerpCasualClickChance == 0 {
+		// Defaults set in config.yaml directly; zero is a valid value here.
+	}
+	if c.Scheduler.SerpDwellSecondsMin == 0 {
+		c.Scheduler.SerpDwellSecondsMin = 2
+	}
+	if c.Scheduler.SerpDwellSecondsMax == 0 {
+		c.Scheduler.SerpDwellSecondsMax = 5
 	}
 }
