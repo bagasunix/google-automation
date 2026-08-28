@@ -57,8 +57,12 @@ async def type_humanized(page, selector: str, text: str) -> None:
     """
     logger.info("Typing into '%s': %s", selector, text[:60])
 
-    # Focus the field first
-    await page.click(selector)
+    # Focus the field with human mouse movement (not raw page.click)
+    element = await page.query_selector(selector)
+    if element:
+        await human_click_element(page, element)
+    else:
+        await page.click(selector)
     await asyncio.sleep(random.uniform(0.2, 0.5))
 
     # Clear any existing text
@@ -204,54 +208,125 @@ def _bezier_points(
     return points
 
 
+def _ease_out_quint(t: float) -> float:
+    """Ease-out quintic: fast start, gradually decelerating — models Fitts's correction phase."""
+    return 1 - (1 - t) ** 5
+
+
+def _ease_in_out_cubic(t: float) -> float:
+    """Ease in-out cubic: slow start, fast middle, slow end — natural acceleration profile."""
+    if t < 0.5:
+        return 4 * t * t * t
+    return 1 - (-2 * t + 2) ** 3 / 2
+
+
+_last_mouse_pos: Tuple[float, float] = (400.0, 300.0)
+
+
 async def mouse_bezier(page, target_x: float, target_y: float) -> None:
     """
-    Move the mouse to (target_x, target_y) along a bezier curve.
+    Move mouse to (target_x, target_y) simulating Fitts's Law.
 
-    Uses two random control points between the current position and the target
-    to create a natural, non-linear path. Speed varies slightly along the path.
+    Human mouse movement has two phases:
+      1. Ballistic: fast movement roughly toward the target
+      2. Correction: decelerate near target, small adjustments
+
+    Path is nearly direct with a slight natural curve (not zigzag).
+    Speed follows ease-in-out profile (slow → fast → slow).
     """
-    # Get current mouse position (Playwright doesn't expose this directly,
-    # so we track from a known starting point or use viewport center)
-    try:
-        current = await page.evaluate("""
-            () => {
-                // We don't have real mouse pos, use last known or viewport center
-                return [window.innerWidth / 2, window.innerHeight / 2];
-            }
-        """)
-        start_x, start_y = current[0], current[1]
-    except Exception:
-        start_x, start_y = 400.0, 300.0
+    global _last_mouse_pos
 
-    # Generate two control points with random offset perpendicular to the path
-    mid_x = (start_x + target_x) / 2
-    mid_y = (start_y + target_y) / 2
-    offset1 = random.uniform(-80, 80)
-    offset2 = random.uniform(-80, 80)
+    start_x, start_y = _last_mouse_pos
 
-    control1 = (mid_x + offset1, mid_y + offset2 * random.choice([-1, 1]))
-    control2 = (mid_x - offset2, mid_y + offset1 * random.choice([-1, 1]))
+    dx = target_x - start_x
+    dy = target_y - start_y
+    distance = math.sqrt(dx * dx + dy * dy)
 
-    points = _bezier_points(
-        (start_x, start_y), control1, control2, (target_x, target_y),
-        num_steps=random.randint(15, 30),
-    )
+    if distance < 3:
+        await page.mouse.move(target_x, target_y)
+        _last_mouse_pos = (target_x, target_y)
+        return
 
-    for px, py in points:
-        await page.mouse.move(px, py)
-        await asyncio.sleep(random.uniform(0.005, 0.02))  # 5-20ms per step
+    # Slight perpendicular curve — humans naturally arc slightly, not perfectly straight.
+    # Scale: ~5-15% of distance, smaller for longer distances (Fitts's Law: longer = more direct)
+    curve_amount = min(distance * 0.08, 12) * random.choice([-1, 1])
 
-    logger.debug("Mouse moved via bezier to (%.0f, %.0f)", target_x, target_y)
+    # Perpendicular direction
+    perp_x = -dy / distance
+    perp_y = dx / distance
+
+    # Single control point offset perpendicular to the path, biased toward the middle.
+    mid_x = (start_x + target_x) / 2 + perp_x * curve_amount
+    mid_y = (start_y + target_y) / 2 + perp_y * curve_amount
+
+    # Two control points near the mid for a gentle arc (not zigzag)
+    c1 = (start_x + (mid_x - start_x) * 0.4, start_y + (mid_y - start_y) * 0.4)
+    c2 = (mid_x + (target_x - mid_x) * 0.6, mid_y + (target_y - mid_y) * 0.6)
+
+    # Step count scales with distance: longer = more steps, but capped.
+    # Human mouse polling rate ~125Hz, movement takes 200-800ms.
+    num_steps = max(15, min(60, int(distance / 8)))
+
+    # Generate timing: ease-in-out (slow start, fast middle, slow end)
+    for i in range(1, num_steps + 1):
+        t = i / num_steps
+        eased_t = _ease_in_out_cubic(t)
+
+        # Interpolate along the quadratic-ish curve
+        u = eased_t
+        x = (1 - u) ** 3 * start_x + 3 * (1 - u) ** 2 * u * c1[0] + 3 * (1 - u) * u ** 2 * c2[0] + u ** 3 * target_x
+        y = (1 - u) ** 3 * start_y + 3 * (1 - u) ** 2 * u * c1[1] + 3 * (1 - u) * u ** 2 * c2[1] + u ** 3 * target_y
+
+        await page.mouse.move(x, y)
+
+        # Timing: slow at start/end, fast in middle.
+        # Derivative of ease-in-out gives the speed profile.
+        prev_t = (i - 1) / num_steps
+        prev_eased = _ease_in_out_cubic(prev_t)
+        speed = max(eased_t - prev_eased, 0.01)
+
+        # Base delay inversely proportional to speed: fast middle = short delay,
+        # slow start/end = longer delay. Range: ~2-18ms.
+        delay = 0.020 / speed
+        delay = max(0.002, min(0.018, delay))
+        await asyncio.sleep(delay)
+
+    # Micro-correction near target: 1-3 tiny adjustments (human overshoot + correct)
+    if random.random() < 0.35:
+        corrections = random.randint(1, 2)
+        for _ in range(corrections):
+            ox = target_x + random.uniform(-2, 2)
+            oy = target_y + random.uniform(-2, 2)
+            await page.mouse.move(ox, oy)
+            await asyncio.sleep(random.uniform(0.015, 0.04))
+        await page.mouse.move(target_x, target_y)
+        await asyncio.sleep(random.uniform(0.01, 0.03))
+
+    _last_mouse_pos = (target_x, target_y)
+    logger.debug("Mouse moved to (%.0f, %.0f) dist=%.0f steps=%d", target_x, target_y, distance, num_steps)
 
 
 async def random_mouse_jitter(page, duration_s: float = 2.0) -> None:
-    """Make small random mouse movements for a given duration (simulates idle hand movement)."""
+    """
+    Simulate idle mouse micro-movements (hand resting on mouse, slight drift).
+
+    Humans at rest don't teleport mouse across the screen — they make small
+    drifts of 10-40px within a local area. Occasional slightly larger shifts.
+    """
+    global _last_mouse_pos
     end_time = asyncio.get_event_loop().time() + duration_s
+
     while asyncio.get_event_loop().time() < end_time:
-        x = random.uniform(100, 800)
-        y = random.uniform(100, 600)
-        await mouse_bezier(page, x, y)
+        # Small drift from current position
+        drift_x = _last_mouse_pos[0] + random.uniform(-35, 35)
+        drift_y = _last_mouse_pos[1] + random.uniform(-25, 25)
+
+        # Keep within viewport
+        vp = await page.evaluate("() => [window.innerWidth, window.innerHeight]")
+        drift_x = max(50, min(vp[0] - 50, drift_x))
+        drift_y = max(50, min(vp[1] - 50, drift_y))
+
+        await mouse_bezier(page, drift_x, drift_y)
         await asyncio.sleep(random.uniform(0.3, 0.8))
 
 

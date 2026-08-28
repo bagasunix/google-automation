@@ -25,6 +25,7 @@ import logging
 from typing import Optional
 
 from .audio import download_audio, transcribe_audio
+from browser.humanizer import human_click_element, random_pause
 
 logger = logging.getLogger("worker.captcha.solver")
 
@@ -113,7 +114,7 @@ async def _try_solve(page) -> bool:
         return is_checked
 
     # Step 4: Switch to audio challenge
-    switched = await _switch_to_audio(bframe)
+    switched = await _switch_to_audio(page, bframe)
     if not switched:
         logger.warning("Could not switch to audio challenge")
         return False
@@ -136,13 +137,13 @@ async def _try_solve(page) -> bool:
         logger.warning("No audio response input found")
         return False
 
-    await input_el.click()
+    await human_click_element(page, input_el)
     await asyncio.sleep(0.5)
     await input_el.fill(answer)
     await random_pause(0.5, 1.5)
 
     # Step 7: Click verify
-    verify_clicked = await _click_verify(bframe)
+    verify_clicked = await _click_verify(page, bframe)
     if not verify_clicked:
         logger.warning("Could not click verify button — trying Enter")
         await page.keyboard.press("Enter")
@@ -169,13 +170,13 @@ async def _find_frame(page, selectors: list[str]):
     return None
 
 
-async def _switch_to_audio(bframe) -> bool:
+async def _switch_to_audio(page, bframe) -> bool:
     """Click the audio button in the bframe to switch from image to audio challenge."""
     for sel in AUDIO_BUTTON_SELECTORS:
         try:
             btn = await bframe.query_selector(sel)
             if btn:
-                await btn.click()
+                await human_click_element(page, btn)
                 await asyncio.sleep(2)
                 # Verify audio element appeared
                 has_audio = await bframe.evaluate("""
@@ -207,7 +208,7 @@ async def _find_input(bframe):
     return None
 
 
-async def _click_verify(bframe) -> bool:
+async def _click_verify(page, bframe) -> bool:
     """Click the verify/submit button."""
     verify_selectors = [
         '#recaptcha-verify-button',
@@ -220,7 +221,7 @@ async def _click_verify(bframe) -> bool:
         try:
             btn = await bframe.query_selector(sel)
             if btn and await btn.is_visible():
-                await btn.click()
+                await human_click_element(page, btn)
                 logger.info("Clicked verify button: %s", sel)
                 return True
         except Exception:
