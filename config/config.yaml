@@ -28,8 +28,8 @@ proxy:
   # Multi-key rotation: key #0 dipakai dulu sampai semua proxy-nya habis/CAPTCHA,
   # baru pindah ke key #1, dst.
   webshare_api_keys:
-    - "4o2y8qp2pijurc2gefxjnsyff53ljmhqnsa6zjg6"  # key #0 (primary)
-    # - "YOUR_SECOND_API_KEY_HERE"                  # key #1 (uncomment kalau punya)
+    - "4o2y8qp2pijurc2gefxjnsyff53ljmhqnsa6zjg6"  # key #0 (bandwidth exhausted)
+    - "h5v1f7iv613kg03wvtlbd4os97bnk1b72y983lrj"  # key #1 (active)
     # - "YOUR_THIRD_API_KEY_HERE"                   # key #2
   sources: []
   # sources (disabled — hanya pakai Webshare API):
@@ -49,6 +49,23 @@ proxy:
 grpc:
   port: 50051
   worker_timeout: 600
+
+captcha:
+  enabled: true                # attempt audio reCAPTCHA solving
+  max_attempts: 3              # retry count per CAPTCHA encounter
+  solver: "whisper"            # "google_web" (free, rate-limited) | "whisper" (local, accurate) | "google_cloud" (API key)
+  whisper_model: "large-v3"    # tiny|base|small|medium|large-v3 (only for solver: "whisper")
+
+bandwidth:
+  monthly_limit_mb: 1024      # Webshare free plan = 1GB per key per month
+  # URL-aware blocking: target domains (see: domains:) get full resources for realism.
+  # Non-target sites (Google, Bing, competitors, distractions) get aggressive blocking.
+  block_images: false          # target: keep images | non-target: always block images
+  block_media: true            # block video/audio/media everywhere
+  block_fonts: true            # block font files everywhere
+  block_stylesheets: false     # target: keep CSS | non-target: block CSS
+  warn_threshold_percent: 80   # log warning when bandwidth usage hits this %
+  pause_threshold_percent: 95  # pause this API key when usage hits this %
 
 article_collection:
   method: sitemap

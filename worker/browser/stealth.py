@@ -101,6 +101,147 @@ TIMEZONES = [
 # Locale candidates
 LOCALES = ["en-US", "en-GB", "en-CA", "en-AU"]
 
+# Country → IANA timezone mapping (for proxy geo consistency).
+# Webshare returns country_code (ISO 3166-1 alpha-2).
+_COUNTRY_TIMEZONES = {
+    "GB": "Europe/London",
+    "US": "America/New_York",
+    "ES": "Europe/Madrid",
+    "DE": "Europe/Berlin",
+    "FR": "Europe/Paris",
+    "NL": "Europe/Amsterdam",
+    "PL": "Europe/Warsaw",
+    "JP": "Asia/Tokyo",
+    "SG": "Asia/Singapore",
+    "ID": "Asia/Jakarta",
+    "AU": "Australia/Sydney",
+    "CA": "America/Toronto",
+    "BR": "America/Sao_Paulo",
+    "IN": "Asia/Kolkata",
+    "RU": "Europe/Moscow",
+    "KR": "Asia/Seoul",
+    "IT": "Europe/Rome",
+    "SE": "Europe/Stockholm",
+    "CH": "Europe/Zurich",
+    "IE": "Europe/Dublin",
+    "NO": "Europe/Oslo",
+    "DK": "Europe/Copenhagen",
+    "FI": "Europe/Helsinki",
+    "PT": "Europe/Lisbon",
+    "CZ": "Europe/Prague",
+    "AT": "Europe/Vienna",
+    "BE": "Europe/Brussels",
+    "MX": "America/Mexico_City",
+    "AR": "America/Argentina/Buenos_Aires",
+    "CL": "America/Santiago",
+    "ZA": "Africa/Johannesburg",
+    "TR": "Europe/Istanbul",
+    "AE": "Asia/Dubai",
+    "TH": "Asia/Bangkok",
+    "VN": "Asia/Ho_Chi_Minh",
+    "PH": "Asia/Manila",
+    "MY": "Asia/Kuala_Lumpur",
+    "HK": "Asia/Hong_Kong",
+    "TW": "Asia/Taipei",
+}
+
+# Country → locale mapping.
+_COUNTRY_LOCALES = {
+    "GB": "en-GB",
+    "US": "en-US",
+    "ES": "es-ES",
+    "DE": "de-DE",
+    "FR": "fr-FR",
+    "NL": "nl-NL",
+    "PL": "pl-PL",
+    "JP": "ja-JP",
+    "SG": "en-SG",
+    "ID": "id-ID",
+    "AU": "en-AU",
+    "CA": "en-CA",
+    "BR": "pt-BR",
+    "IN": "en-IN",
+    "RU": "ru-RU",
+    "KR": "ko-KR",
+    "IT": "it-IT",
+    "SE": "sv-SE",
+    "CH": "de-CH",
+    "IE": "en-IE",
+    "NO": "nb-NO",
+    "DK": "da-DK",
+    "FI": "fi-FI",
+    "PT": "pt-PT",
+    "CZ": "cs-CZ",
+    "AT": "de-AT",
+    "BE": "nl-BE",
+    "MX": "es-MX",
+    "AR": "es-AR",
+    "CL": "es-CL",
+    "ZA": "en-ZA",
+    "TR": "tr-TR",
+    "AE": "ar-AE",
+    "TH": "th-TH",
+    "VN": "vi-VN",
+    "PH": "en-PH",
+    "MY": "ms-MY",
+    "HK": "zh-HK",
+    "TW": "zh-TW",
+}
+
+
+def _pick_ua_for_locale(locale: str) -> str:
+    """
+    Pick a realistic User-Agent for the given locale.
+    US/GB/AU/CA → mostly Windows Chrome, some Edge, occasional Firefox.
+    DE/NL → more Linux Chrome (technical users).
+    JP → more Mac Chrome/Safari.
+    Fallback: random from the full pool.
+    """
+    en_windows_uas = [ua for ua in USER_AGENTS
+                      if "Windows" in ua and "Chrome" in ua and "Edg" not in ua]
+    en_edge_uas = [ua for ua in USER_AGENTS if "Edg" in ua]
+    linux_uas = [ua for ua in USER_AGENTS if "Linux" in ua]
+    mac_uas = [ua for ua in USER_AGENTS if "Macintosh" in ua]
+    firefox_uas = [ua for ua in USER_AGENTS if "Firefox" in ua]
+
+    if locale.startswith("de") or locale.startswith("nl"):
+        # DE/NL: 50% Windows Chrome, 25% Linux Chrome, 25% Firefox Windows
+        r = random.random()
+        if r < 0.50 and en_windows_uas:
+            return random.choice(en_windows_uas)
+        if r < 0.75 and linux_uas:
+            return random.choice(linux_uas)
+        if firefox_uas:
+            return random.choice(firefox_uas)
+    elif locale.startswith("ja"):
+        # JP: 40% Mac Chrome, 30% Windows Chrome, 20% Safari, 10% Firefox Mac
+        r = random.random()
+        if r < 0.40 and mac_uas:
+            mac_chrome = [ua for ua in mac_uas if "Chrome" in ua and "Firefox" not in ua]
+            if mac_chrome:
+                return random.choice(mac_chrome)
+        if r < 0.70 and en_windows_uas:
+            return random.choice(en_windows_uas)
+        if r < 0.90:
+            safari = [ua for ua in mac_uas if "Safari" in ua and "Chrome" not in ua]
+            if safari:
+                return random.choice(safari)
+    elif locale.startswith(("en-US", "en-GB", "en-AU", "en-CA", "en-SG", "en-IN", "en-IE", "en-ZA", "en-PH")):
+        # English: 60% Windows Chrome, 20% Edge, 10% Firefox, 10% Mac Chrome
+        r = random.random()
+        if r < 0.60 and en_windows_uas:
+            return random.choice(en_windows_uas)
+        if r < 0.80 and en_edge_uas:
+            return random.choice(en_edge_uas)
+        if r < 0.90 and firefox_uas:
+            return random.choice(firefox_uas)
+        if mac_uas:
+            mac_chrome = [ua for ua in mac_uas if "Chrome" in ua and "Firefox" not in ua]
+            if mac_chrome:
+                return random.choice(mac_chrome)
+
+    return random.choice(USER_AGENTS)
+
 # WebGL renderer / vendor pairs (common real GPUs)
 WEBGL_CONFIGS = [
     {"vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)"},
@@ -143,17 +284,62 @@ class StealthProfile:
 
     @classmethod
     def random(cls) -> "StealthProfile":
-        """Generate a random but internally-consistent profile."""
-        ua = random.choice(USER_AGENTS)
-        vp = random.choice(VIEWPORTS)
+        """Generate a fully random profile (no proxy geo — fallback)."""
         tz = random.choice(TIMEZONES)
         loc = random.choice(LOCALES)
+        ua = _pick_ua_for_locale(loc)
+
+        vp = random.choice(VIEWPORTS)
         webgl = random.choice(WEBGL_CONFIGS)
         color_depth = random.choice(COLOR_DEPTHS)
         hw_conc = random.choice(HARDWARE_CONCURRENCIES)
         dpr = random.choice(DEVICE_PIXEL_RATIOS)
 
-        # Infer platform from UA
+        if "Windows" in ua:
+            platform = "Win32"
+        elif "Macintosh" in ua:
+            platform = "MacIntel"
+        else:
+            platform = "Linux x86_64"
+
+        return cls(
+            user_agent=ua,
+            viewport=vp,
+            timezone=tz,
+            locale=loc,
+            webgl_vendor=webgl["vendor"],
+            webgl_renderer=webgl["renderer"],
+            color_depth=color_depth,
+            hardware_concurrency=hw_conc,
+            device_pixel_ratio=dpr,
+            platform=platform,
+        )
+
+    @classmethod
+    def for_proxy(cls, country: str = "", timezone: str = "") -> "StealthProfile":
+        """
+        Generate a profile consistent with the proxy's geography.
+
+        - Timezone: use proxy_timezone if provided, else derive from country.
+        - Locale: match country (en-GB for GB, en-US for US, etc.).
+        - UA platform: match country (US/GB → Windows Chrome dominant;
+          DE/NL → more Linux; JP → more Mac).
+        - Everything else (viewport, WebGL, color_depth, hw_concurrency,
+          device_pixel_ratio) stays randomised.
+        """
+        tz = timezone or _COUNTRY_TIMEZONES.get(country.upper(), "") or random.choice(TIMEZONES)
+        loc = _COUNTRY_LOCALES.get(country.upper(), "en-US")
+
+        # Pick a UA consistent with the locale's platform.
+        ua = _pick_ua_for_locale(loc)
+
+        vp = random.choice(VIEWPORTS)
+        webgl = random.choice(WEBGL_CONFIGS)
+        color_depth = random.choice(COLOR_DEPTHS)
+        hw_conc = random.choice(HARDWARE_CONCURRENCIES)
+        dpr = random.choice(DEVICE_PIXEL_RATIOS)
+
+        # Infer platform from UA.
         if "Windows" in ua:
             platform = "Win32"
         elif "Macintosh" in ua:

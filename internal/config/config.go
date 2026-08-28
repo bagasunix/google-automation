@@ -15,6 +15,7 @@ type Config struct {
 	Scheduler         SchedulerConfig   `yaml:"scheduler"`
 	Proxy             ProxyConfig       `yaml:"proxy"`
 	GRPC              GRPCConfig        `yaml:"grpc"`
+	Bandwidth         BandwidthConfig   `yaml:"bandwidth"`
 	ArticleCollection ArticleCollection `yaml:"article_collection"`
 }
 
@@ -57,6 +58,17 @@ type GRPCConfig struct {
 type ArticleCollection struct {
 	Method               string `yaml:"method"`
 	RefreshIntervalHours int    `yaml:"refresh_interval_hours"`
+}
+
+// BandwidthConfig configures proxy bandwidth tracking and conservation.
+type BandwidthConfig struct {
+	MonthlyLimitMB          int  `yaml:"monthly_limit_mb"`
+	BlockImages             bool `yaml:"block_images"`
+	BlockMedia              bool `yaml:"block_media"`
+	BlockFonts              bool `yaml:"block_fonts"`
+	BlockStylesheets        bool `yaml:"block_stylesheets"`
+	WarnThresholdPercent    int  `yaml:"warn_threshold_percent"`
+	PauseThresholdPercent   int  `yaml:"pause_threshold_percent"`
 }
 
 // Load reads and parses the YAML config from the given path.
@@ -124,5 +136,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ArticleCollection.RefreshIntervalHours == 0 {
 		c.ArticleCollection.RefreshIntervalHours = 6
+	}
+	if c.Bandwidth.MonthlyLimitMB == 0 {
+		c.Bandwidth.MonthlyLimitMB = 1024
+	}
+	if c.Bandwidth.PauseThresholdPercent == 0 {
+		c.Bandwidth.PauseThresholdPercent = 95
+	}
+	if c.Bandwidth.WarnThresholdPercent == 0 {
+		c.Bandwidth.WarnThresholdPercent = 80
 	}
 }

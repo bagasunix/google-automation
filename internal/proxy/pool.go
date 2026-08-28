@@ -5,6 +5,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"google-automation/internal/bandwidth"
 )
 
 // Pool manages the rotation of proxies with a STRICT 1-proxy-1-search rule:
@@ -24,6 +26,10 @@ type Pool struct {
 
 	// allKnown keeps every proxy the pool has ever held for analytics.
 	allKnown []PooledProxy
+
+	// bwTracker tracks bandwidth per API key; proxies whose key is exhausted
+	// are skipped during Acquire and pushed to the back of the queue.
+	bwTracker *bandwidth.Tracker
 }
 
 // PooledProxy is a proxy enriched with health-check metadata and a DB ID.
@@ -48,6 +54,14 @@ func NewPool() *Pool {
 	return &Pool{
 		blacklisted: make(map[int64]string),
 	}
+}
+
+// SetBandwidthTracker wires the bandwidth tracker so Acquire can skip
+// proxies whose API key has hit the monthly bandwidth pause threshold.
+func (p *Pool) SetBandwidthTracker(t *bandwidth.Tracker) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bwTracker = t
 }
 
 // Load replaces the pool contents with a fresh batch of health-checked proxies.
@@ -82,6 +96,8 @@ func (p *Pool) Load(proxies []PooledProxy) {
 // Acquire returns the next available proxy for this cycle. STRICT rotation:
 // each proxy is returned at most once per cycle. If no proxies are available,
 // returns false — the caller must wait for a pool refresh.
+// Proxies whose API key has hit the bandwidth pause threshold are skipped
+// and pushed to the back of the queue (not removed — they recover next month).
 func (p *Pool) Acquire() (PooledProxy, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -90,10 +106,25 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 		return PooledProxy{}, false
 	}
 
-	px := p.available[0]
-	p.available = p.available[1:]
-	p.usedThisCycle = append(p.usedThisCycle, px)
-	return px, true
+	// Scan for the first proxy whose API key still has bandwidth.
+	for i := 0; i < len(p.available); i++ {
+		px := p.available[i]
+
+		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
+			// Key exhausted — rotate this proxy to the back and keep scanning.
+			p.available = append(p.available[:i], p.available[i+1:]...)
+			p.available = append(p.available, px)
+			i-- // re-check the shifted element
+			continue
+		}
+
+		// Usable proxy found — pop it from available.
+		p.available = append(p.available[:i], p.available[i+1:]...)
+		p.usedThisCycle = append(p.usedThisCycle, px)
+		return px, true
+	}
+
+	return PooledProxy{}, false
 }
 
 // Release returns a proxy back to the available pool (e.g. task failed with

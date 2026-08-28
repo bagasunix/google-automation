@@ -43,6 +43,9 @@ from search.serp import (
     detect_captcha,
     click_target_with_variation,
 )
+from captcha.solver import solve_recaptcha
+
+CAPTCHA_MAX_ATTEMPTS = 3
 
 logger = logging.getLogger("worker.search.google")
 
@@ -186,7 +189,12 @@ async def google_search_flow(
 
         # Check for CAPTCHA on the homepage (rare but possible)
         if await detect_captcha(page, "google"):
-            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on Google homepage")
+            logger.warning("CAPTCHA on Google homepage — attempting audio solve")
+            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+            if not solved:
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — audio solve failed")
+            logger.info("CAPTCHA solved — retrying search")
+            await navigate_to_google(page)
 
         # Perform the search
         success = await perform_google_search(page, query)
@@ -195,7 +203,12 @@ async def google_search_flow(
 
         # Check for CAPTCHA after search
         if await detect_captcha(page, "google"):
-            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search")
+            logger.warning("CAPTCHA after search — attempting audio solve")
+            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+            if not solved:
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — audio solve failed")
+            logger.info("CAPTCHA solved after search — continuing")
+            await random_pause(2, 4)
 
         # Browse the SERP (scroll a bit, read snippets)
         await human_scroll(page, random.randint(300, 600))

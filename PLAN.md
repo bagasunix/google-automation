@@ -1,6 +1,6 @@
 # PLAN — Search Automation bagasunix.com
 
-Last updated: 2026-08-14
+Last updated: 2026-08-28
 
 ---
 
@@ -68,6 +68,15 @@ Last updated: 2026-08-14
 ## Pending / Next Steps 🔧
 
 ### Priority Tinggi
+
+- [x] **reCAPTCHA Audio Solver** — auto-solve reCAPTCHA v2 via audio challenge.
+  Download audio via browser fetch (through proxy), transcribe with SpeechRecognition
+  (Google Web Speech API), convert number words to digits, type answer + verify.
+  Integrated at: google.py, bing.py, serp.py (page 1 + page 2 CAPTCHA).
+  Config: `captcha:` section in config.yaml (`enabled`, `max_attempts`, `solver`).
+  Deps: SpeechRecognition, pydub (installed in worker/.venv).
+
+### Priority Sedang
 
 - [ ] **Residential Proxy** — datacenter IP Webshare selalu kena Google sorry page.
   Solusi: upgrade ke Webshare residential, atau coba provider lain (Oxylabs, Bright Data, Smartproxy).

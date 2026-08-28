@@ -129,6 +129,8 @@ async def execute_task(request) -> object:
     # Proxy auth credentials (for Webshare authenticated proxies)
     proxy_username = getattr(request, "proxy_username", "")
     proxy_password = getattr(request, "proxy_password", "")
+    proxy_country = getattr(request, "proxy_country", "")
+    proxy_timezone = getattr(request, "proxy_timezone", "")
 
     proxy_str = f"{proxy_ip}:{proxy_port}" if proxy_ip else "direct"
     if proxy_username:
@@ -162,6 +164,8 @@ async def execute_task(request) -> object:
             proxy_port=proxy_port,
             proxy_username=proxy_username,
             proxy_password=proxy_password,
+            proxy_country=proxy_country,
+            proxy_timezone=proxy_timezone,
             headless=not _ARGS.headed if _ARGS else True,
         )
         page = session.page
@@ -311,6 +315,10 @@ async def execute_task(request) -> object:
         await post_exit_cooldown(30, 120)
 
     # Build TaskResponse (real protobuf or fallback)
+    bw_used = session.bytes_received_kb if session else 0
+    if bw_used > 0:
+        logger.info("Bandwidth used: %d KB (%.1f MB)", bw_used, bw_used / 1024)
+
     response = TaskResponse(
         task_id=task_id,
         success=success,
@@ -322,6 +330,7 @@ async def execute_task(request) -> object:
         internal_clicks=internal_clicks,
         captcha_hit=captcha_hit,
         error=error_msg,
+        bandwidth_used_kb=bw_used,
     )
 
     logger.info("TASK END: %s (success=%s)", task_id, success)
@@ -542,6 +551,7 @@ async def run_http_server(port: int) -> None:
                     "internal_clicks": response.internal_clicks,
                     "captcha_hit": response.captcha_hit,
                     "error": response.error,
+                    "bandwidth_used_kb": response.bandwidth_used_kb,
                 }
             return web.json_response(resp_dict)
         except Exception as e:

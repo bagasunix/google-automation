@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
 	"google-automation/internal/analytics"
 	"google-automation/internal/article"
+	"google-automation/internal/bandwidth"
 	"google-automation/internal/config"
 	grpcclient "google-automation/internal/grpc"
 	pb "google-automation/internal/grpc/proto"
@@ -34,6 +36,7 @@ type Orchestrator struct {
 	stats     *analytics.Stats
 	serp      *analytics.SerpTracker
 	grpc      *grpcclient.Client
+	bwTracker *bandwidth.Tracker
 
 	// running tracks whether the loop should continue.
 	running bool
@@ -52,6 +55,15 @@ func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orc
 	stats := analytics.NewStats(db)
 	serpTracker := analytics.NewSerpTracker(db)
 
+	// Bandwidth tracker: reads/writes data/bandwidth.json (shared with Python worker).
+	baseDir, _ := os.Getwd()
+	bwTracker := bandwidth.NewTracker(
+		baseDir,
+		cfg.Bandwidth.MonthlyLimitMB,
+		cfg.Bandwidth.PauseThresholdPercent,
+	)
+	proxyMgr.Pool().SetBandwidthTracker(bwTracker)
+
 	return &Orchestrator{
 		cfg:       cfg,
 		db:        db,
@@ -64,6 +76,7 @@ func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orc
 		stats:     stats,
 		serp:      serpTracker,
 		grpc:      grpcClient,
+		bwTracker: bwTracker,
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -200,6 +213,8 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		PreSearchQueries: preSearchQueries,
 		ProxyUsername:    px.Username,
 		ProxyPassword:    px.Password,
+		ProxyCountry:     px.Country,
+		ProxyTimezone:    px.Timezone,
 	}
 
 	log.Printf("[orchestrator] task %s: article=%q method=%s engine=%s proxy=%s:%d (%s)",
@@ -214,6 +229,15 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 
 	// 10. Process the result.
 	o.processResult(taskID, selected.Article.ID, resp, err)
+
+	// 10b. Record bandwidth used (if Python reported it).
+	if resp != nil && resp.BandwidthUsedKb > 0 {
+		o.bwTracker.RecordUsage(px.APIKeyIndex, float64(resp.BandwidthUsedKb))
+	} else if err != nil {
+		// gRPC error — proxy may have burned some bandwidth before failing.
+		// Estimate ~1MB to avoid undercounting.
+		o.bwTracker.RecordUsage(px.APIKeyIndex, 1024)
+	}
 
 	// 11. Check CAPTCHA rate and pause if needed.
 	if resp != nil && resp.CaptchaHit {

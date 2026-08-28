@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ntask.proto\x12\x10searchautomation\"\xdc\x01\n\x0bTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x15\n\rarticle_title\x18\x02 \x01(\t\x12\x13\n\x0b\x61rticle_url\x18\x03 \x01(\t\x12\x0e\n\x06\x64omain\x18\x04 \x01(\t\x12\x10\n\x08proxy_ip\x18\x05 \x01(\t\x12\x12\n\nproxy_port\x18\x06 \x01(\x05\x12\x0e\n\x06\x65ngine\x18\x07 \x01(\t\x12\x1a\n\x12pre_search_queries\x18\x08 \x03(\t\x12\x16\n\x0eproxy_username\x18\t \x01(\t\x12\x16\n\x0eproxy_password\x18\n \x01(\t\"\xe2\x01\n\x0cTaskResponse\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0e\n\x06\x65ngine\x18\x03 \x01(\t\x12\x12\n\nproxy_used\x18\x04 \x01(\t\x12\x15\n\rserp_position\x18\x05 \x01(\x05\x12\x1a\n\x12\x64well_time_seconds\x18\x06 \x01(\x05\x12\x1c\n\x14scroll_depth_percent\x18\x07 \x01(\x05\x12\x17\n\x0finternal_clicks\x18\x08 \x01(\x05\x12\x13\n\x0b\x63\x61ptcha_hit\x18\t \x01(\x08\x12\r\n\x05\x65rror\x18\n \x01(\t2]\n\rWorkerService\x12L\n\x0b\x45xecuteTask\x12\x1d.searchautomation.TaskRequest\x1a\x1e.searchautomation.TaskResponseB\'Z%google-automation/internal/grpc/protob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ntask.proto\x12\x10searchautomation\"\x8b\x02\n\x0bTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x15\n\rarticle_title\x18\x02 \x01(\t\x12\x13\n\x0b\x61rticle_url\x18\x03 \x01(\t\x12\x0e\n\x06\x64omain\x18\x04 \x01(\t\x12\x10\n\x08proxy_ip\x18\x05 \x01(\t\x12\x12\n\nproxy_port\x18\x06 \x01(\x05\x12\x0e\n\x06\x65ngine\x18\x07 \x01(\t\x12\x1a\n\x12pre_search_queries\x18\x08 \x03(\t\x12\x16\n\x0eproxy_username\x18\t \x01(\t\x12\x16\n\x0eproxy_password\x18\n \x01(\t\x12\x15\n\rproxy_country\x18\x0b \x01(\t\x12\x16\n\x0eproxy_timezone\x18\x0c \x01(\t\"\xfd\x01\n\x0cTaskResponse\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x0e\n\x06\x65ngine\x18\x03 \x01(\t\x12\x12\n\nproxy_used\x18\x04 \x01(\t\x12\x15\n\rserp_position\x18\x05 \x01(\x05\x12\x1a\n\x12\x64well_time_seconds\x18\x06 \x01(\x05\x12\x1c\n\x14scroll_depth_percent\x18\x07 \x01(\x05\x12\x17\n\x0finternal_clicks\x18\x08 \x01(\x05\x12\x13\n\x0b\x63\x61ptcha_hit\x18\t \x01(\x08\x12\r\n\x05\x65rror\x18\n \x01(\t\x12\x19\n\x11\x62\x61ndwidth_used_kb\x18\x0b \x01(\x05\x32]\n\rWorkerService\x12L\n\x0b\x45xecuteTask\x12\x1d.searchautomation.TaskRequest\x1a\x1e.searchautomation.TaskResponseB\'Z%google-automation/internal/grpc/protob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,9 +33,9 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z%google-automation/internal/grpc/proto'
   _globals['_TASKREQUEST']._serialized_start=33
-  _globals['_TASKREQUEST']._serialized_end=253
-  _globals['_TASKRESPONSE']._serialized_start=256
-  _globals['_TASKRESPONSE']._serialized_end=482
-  _globals['_WORKERSERVICE']._serialized_start=484
-  _globals['_WORKERSERVICE']._serialized_end=577
+  _globals['_TASKREQUEST']._serialized_end=300
+  _globals['_TASKRESPONSE']._serialized_start=303
+  _globals['_TASKRESPONSE']._serialized_end=556
+  _globals['_WORKERSERVICE']._serialized_start=558
+  _globals['_WORKERSERVICE']._serialized_end=651
 # @@protoc_insertion_point(module_scope)

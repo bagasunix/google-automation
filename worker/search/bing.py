@@ -36,6 +36,9 @@ from search.serp import (
     detect_captcha,
     click_target_with_variation,
 )
+from captcha.solver import solve_recaptcha
+
+CAPTCHA_MAX_ATTEMPTS = 3
 
 logger = logging.getLogger("worker.search.bing")
 
@@ -187,7 +190,12 @@ async def bing_search_flow(
 
         # Check for CAPTCHA on homepage
         if await detect_captcha(page, "bing"):
-            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on Bing homepage")
+            logger.warning("CAPTCHA on Bing homepage — attempting audio solve")
+            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+            if not solved:
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — audio solve failed")
+            logger.info("CAPTCHA solved — retrying search")
+            await navigate_to_bing(page)
 
         # Perform the search
         success = await perform_bing_search(page, query)
@@ -196,7 +204,12 @@ async def bing_search_flow(
 
         # Check for CAPTCHA after search
         if await detect_captcha(page, "bing"):
-            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search")
+            logger.warning("CAPTCHA after Bing search — attempting audio solve")
+            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+            if not solved:
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — audio solve failed")
+            logger.info("CAPTCHA solved after search — continuing")
+            await random_pause(2, 4)
 
         # Browse the SERP
         await human_scroll(page, random.randint(300, 600))

@@ -18,6 +18,8 @@ message TaskRequest {
     repeated string pre_search_queries = 8;
     string proxy_username = 9;          // auth for Webshare proxies
     string proxy_password = 10;         // auth for Webshare proxies
+    string proxy_country = 11;          // proxy geo country (e.g. "GB", "US") for timezone/locale matching
+    string proxy_timezone = 12;         // IANA timezone (e.g. "Europe/London") derived from proxy country
 }
 
 message TaskResponse {
@@ -31,4 +33,5 @@ message TaskResponse {
     int32 internal_clicks = 8;
     bool captcha_hit = 9;
     string error = 10;
+    int32 bandwidth_used_kb = 11;      // actual bytes transferred through proxy
 }

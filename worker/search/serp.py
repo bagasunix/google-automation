@@ -341,10 +341,16 @@ async def find_target_in_serp(
     Checks page 1 first, then page 2 if not found.
     Returns SerpSearchOutcome with position (0 = not found) and captcha flag.
     """
+    from captcha.solver import solve_recaptcha
+
     # First check for CAPTCHA
     captcha = await detect_captcha(page, engine)
     if captcha:
-        return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA detected on SERP page")
+        logger.warning("CAPTCHA on SERP — attempting audio solve")
+        solved = await solve_recaptcha(page, max_attempts=3)
+        if not solved:
+            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on SERP — audio solve failed")
+        await random_pause(2, 4)
 
     # Parse the current page
     if engine == "google":
@@ -368,7 +374,11 @@ async def find_target_in_serp(
             # Check CAPTCHA again
             captcha2 = await detect_captcha(page, engine)
             if captcha2:
-                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA detected on page 2")
+                logger.warning("CAPTCHA on page 2 — attempting audio solve")
+                solved2 = await solve_recaptcha(page, max_attempts=3)
+                if not solved2:
+                    return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on page 2 — audio solve failed")
+                await random_pause(2, 4)
 
             if engine == "google":
                 results_p2 = await parse_google_serp(page)

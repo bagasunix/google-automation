@@ -56,6 +56,8 @@ class StealthSession:
     proxy_scheme: str = "http"
     proxy_username: str = ""
     proxy_password: str = ""
+    proxy_country: str = ""
+    proxy_timezone: str = ""
     headless: bool = True
     profile: Optional[StealthProfile] = None
     slow_mo: int = 0
@@ -65,6 +67,9 @@ class StealthSession:
     _browser: Optional[Browser] = None
     _context: Optional[BrowserContext] = None
     _page: Optional[Page] = None
+
+    # Bandwidth tracking: total bytes received through this session's proxy
+    _bytes_received: int = 0
 
     async def __aenter__(self) -> "StealthSession":
         await self.start()
@@ -82,9 +87,13 @@ class StealthSession:
 
         self._playwright = await async_playwright().start()
 
-        # Generate a random stealth profile if none provided
+        # Generate a random stealth profile if none provided.
+        # If proxy geo is known, derive timezone + locale from it for consistency.
         if self.profile is None:
-            self.profile = StealthProfile.random()
+            self.profile = StealthProfile.for_proxy(
+                country=self.proxy_country,
+                timezone=self.proxy_timezone,
+            )
 
         # Browser launch options
         launch_args = [
@@ -148,18 +157,24 @@ class StealthSession:
 
         self._context = await self._browser.new_context(**context_options)
 
+        # Bandwidth tracker: count bytes received through the proxy.
+        async def _on_response(response):
+            try:
+                cl = response.headers.get("content-length", "")
+                if cl and cl.isdigit():
+                    self._bytes_received += int(cl)
+            except Exception:
+                pass
+        self._context.on("response", _on_response)
+
         # Clear all storage to ensure fresh state per proxy — no cookies, cache,
         # localStorage, sessionStorage, or IndexedDB carried over from previous session.
         await self._context.clear_cookies()
 
-        # Block font resources for speed (but keep images for engagement realism)
-        async def _block_fonts(route):
-            if route.request.resource_type == "font":
-                await route.abort()
-            else:
-                await route.continue_()
-
-        await self._context.route("**/*", _block_fonts)
+        # Block resources for bandwidth conservation (Webshare free = 1GB/month)
+        # Fonts + media + video + audio always blocked. Images kept for engagement realism.
+        from browser.bandwidth import aggressive_resource_blocker
+        await aggressive_resource_blocker(self._context, block_images=False)
 
         # Apply our custom stealth init scripts
         apply_stealth(self._context, self.profile)
@@ -209,6 +224,11 @@ class StealthSession:
         return self._page
 
     @property
+    def bytes_received_kb(self) -> int:
+        """Total bytes received through this session's proxy, in KB."""
+        return self._bytes_received // 1024
+
+    @property
     def context(self) -> BrowserContext:
         """Get the browser context."""
         if self._context is None:
@@ -253,18 +273,15 @@ async def create_session(
     proxy_scheme: str = "http",
     proxy_username: str = "",
     proxy_password: str = "",
+    proxy_country: str = "",
+    proxy_timezone: str = "",
     headless: bool = True,
     profile: Optional[StealthProfile] = None,
 ) -> StealthSession:
     """
     Convenience function to create and start a stealth session.
     Supports authenticated proxies (Webshare) via proxy_username/password.
-
-    Usage:
-        session = await create_session("1.2.3.4", 8080)
-        page = await session.new_page()
-        ...
-        await session.close()
+    Pass proxy_country + proxy_timezone for geo-consistent stealth profile.
     """
     session = StealthSession(
         proxy_ip=proxy_ip,
@@ -272,6 +289,8 @@ async def create_session(
         proxy_scheme=proxy_scheme,
         proxy_username=proxy_username,
         proxy_password=proxy_password,
+        proxy_country=proxy_country,
+        proxy_timezone=proxy_timezone,
         headless=headless,
         profile=profile,
     )
