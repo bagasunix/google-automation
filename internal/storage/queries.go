@@ -310,6 +310,18 @@ func (db *DB) TodayTaskCountByEngine(engine string) (int, error) {
 	return count, err
 }
 
+// TodayTaskCountByDomain returns task count today for a specific domain.
+func (db *DB) TodayTaskCountByDomain(domain string) (int, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM tasks t
+		 JOIN articles a ON a.id = t.article_id
+		 WHERE a.domain=? AND date(t.created_at) = date('now')`,
+		domain,
+	).Scan(&count)
+	return count, err
+}
+
 // TodaySuccessCount returns the number of successful tasks today.
 func (db *DB) TodaySuccessCount() (int, error) {
 	var count int

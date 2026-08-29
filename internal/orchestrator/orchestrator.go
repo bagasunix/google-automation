@@ -193,6 +193,17 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		o.pool.Release(px)
 		return
 	}
+
+	// 5. Domain rate limit: cap searches per domain per day (0 = unlimited).
+	if limit := o.cfg.Scheduler.MaxSearchesPerDomainPerDay; limit > 0 {
+		count, err := o.db.TodayTaskCountByDomain(selected.Article.Domain)
+		if err == nil && count >= limit {
+			log.Printf("[orchestrator] domain %s hit daily limit (%d/%d) — skipping",
+				selected.Article.Domain, count, limit)
+			o.pool.Release(px)
+			return
+		}
+	}
 	log.Printf("[orchestrator] step4 ok, creating task...")
 	engine := o.scheduler.PickEngineAvailable()
 	if engine == "" {
