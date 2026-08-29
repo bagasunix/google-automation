@@ -87,6 +87,13 @@ func (cm *CooldownManager) BackoffDuration() time.Duration {
 	return time.Duration(mins) * time.Minute
 }
 
+// DailyReset resets the consecutive failure counter at midnight so a new day
+// starts with a clean backoff state.
+func (cm *CooldownManager) DailyReset() {
+	cm.consecutiveFailures = 0
+	fmt.Println("[cooldown] daily reset: cleared consecutive failure count")
+}
+
 // IsWithinActiveHours checks if the given hour is within the configured active window.
 func (cm *CooldownManager) IsWithinActiveHours(hour int) bool {
 	return hour >= cm.cfg.ActiveHoursStart && hour < cm.cfg.ActiveHoursEnd

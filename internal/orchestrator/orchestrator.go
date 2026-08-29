@@ -109,6 +109,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	go o.articleRefreshLoop()
 
+	// Start the midnight daily-reset goroutine.
+	go o.dailyResetLoop()
+
 	// --- Main loop ---
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -338,6 +341,49 @@ func (o *Orchestrator) articleRefreshLoop() {
 			}
 		}
 	}
+}
+
+// dailyResetLoop runs a goroutine that performs a full system reset every
+// midnight (local time): resets the proxy pool cycle, clears all engine
+// CAPTCHA pauses, resets the cooldown failure counter, and zeroes out the
+// daily proxy used_count in the database.
+func (o *Orchestrator) dailyResetLoop() {
+	for {
+		nextMidnight := timeUntilNextMidnight()
+		log.Printf("[orchestrator] daily reset scheduled in %v", nextMidnight.Round(time.Minute))
+
+		timer := time.NewTimer(nextMidnight)
+		select {
+		case <-o.stopCh:
+			timer.Stop()
+			return
+		case <-timer.C:
+			o.performDailyReset()
+		}
+	}
+}
+
+// performDailyReset executes the actual reset sequence.
+func (o *Orchestrator) performDailyReset() {
+	log.Println("[orchestrator] === midnight daily reset ===")
+
+	o.pool.DailyReset()
+	o.scheduler.DailyReset()
+	o.cooldown.DailyReset()
+
+	if err := o.db.ResetDailyProxyUsage(); err != nil {
+		log.Printf("[orchestrator] daily proxy usage reset failed: %v", err)
+	}
+
+	log.Println("[orchestrator] daily reset complete — starting fresh day")
+}
+
+// timeUntilNextMidnight returns the duration until the next local midnight.
+func timeUntilNextMidnight() time.Duration {
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1,
+		0, 0, 0, 0, now.Location())
+	return midnight.Sub(now)
 }
 
 // Stop signals the orchestrator to shut down. Safe to call multiple times

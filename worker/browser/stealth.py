@@ -636,9 +636,9 @@ def json_array(items: list[str]) -> str:
     return json.dumps(items)
 
 
-def apply_stealth(context, profile: StealthProfile | None = None) -> StealthProfile:
+async def apply_stealth(context, profile: StealthProfile | None = None) -> StealthProfile:
     """
-    Apply stealth configuration to a Playwright BrowserContext.
+    Apply stealth configuration to a Playwright BrowserContext (async).
 
     This sets:
       - User-Agent
@@ -666,13 +666,11 @@ def apply_stealth(context, profile: StealthProfile | None = None) -> StealthProf
         profile.platform,
     )
 
-    # Apply context-level settings
-    context.set_extra_http_headers({
+    await context.set_extra_http_headers({
         "Accept-Language": f"{profile.locale},en;q=0.9",
     })
 
-    # Inject the stealth init script — runs before any page JS
     script = build_stealth_script(profile)
-    context.add_init_script(script)
+    await context.add_init_script(script)
 
     return profile

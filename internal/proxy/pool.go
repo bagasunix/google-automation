@@ -188,6 +188,26 @@ func (p *Pool) ResetCycle() {
 	p.usedThisCycle = nil
 }
 
+// DailyReset performs a midnight cycle reset: returns all used proxies to the
+// available pool so they can be reused for a fresh day. Blacklisted proxies
+// stay blacklisted (CAPTCHA bans are permanent). Non-blacklisted proxies that
+// were deactivated get reactivated for the new day.
+func (p *Pool) DailyReset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	recovered := 0
+	for _, px := range p.usedThisCycle {
+		if _, banned := p.blacklisted[px.ID]; !banned {
+			p.available = append(p.available, px)
+			recovered++
+		}
+	}
+	p.usedThisCycle = nil
+	fmt.Printf("[proxy-pool] daily reset: recovered %d proxies (blacklisted: %d)\n",
+		recovered, len(p.blacklisted))
+}
+
 // AllKnown returns a snapshot of every proxy the pool currently knows about.
 func (p *Pool) AllKnown() []PooledProxy {
 	p.mu.Lock()

@@ -327,6 +327,15 @@ func (db *DB) TodayFailCount() (int, error) {
 	return count, err
 }
 
+// ResetDailyProxyUsage resets used_count for all active proxies at midnight.
+// This does NOT un-blacklist proxies — CAPTCHA bans are permanent.
+func (db *DB) ResetDailyProxyUsage() error {
+	_, err := db.conn.Exec(
+		`UPDATE proxies SET used_count = 0 WHERE active = 1 AND blacklisted = 0`,
+	)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Daily stats queries
 // ---------------------------------------------------------------------------

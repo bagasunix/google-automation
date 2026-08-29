@@ -181,6 +181,16 @@ func (s *Scheduler) PickEngineAvailable() string {
 	return "bing"
 }
 
+// DailyReset clears all per-engine CAPTCHA pauses and the global pause at
+// midnight. Called automatically by the orchestrator's daily reset goroutine.
+func (s *Scheduler) DailyReset() {
+	s.pausedUntil = time.Time{}
+	for engine := range s.enginePausedUntil {
+		s.enginePausedUntil[engine] = time.Time{}
+	}
+	fmt.Println("[scheduler] daily reset: cleared all engine CAPTCHA pauses")
+}
+
 // PickEngine selects a search engine based on the configured ratio (Google 70 / Bing 30).
 func (s *Scheduler) PickEngine() string {
 	roll := rand.Intn(s.cfg.EngineRatio.Google + s.cfg.EngineRatio.Bing)

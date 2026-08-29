@@ -82,11 +82,20 @@ Last updated: 2026-08-28
   Solusi: upgrade ke Webshare residential, atau coba provider lain (Oxylabs, Bright Data, Smartproxy).
   Setelah itu Google 70% bisa aktif lagi.
 
-- [ ] **Fix stealth.py RuntimeWarning** — `set_extra_http_headers` dan `add_init_script`
-  perlu `await`, tapi dipanggil dari sync context. Perlu refactor `apply_stealth()` jadi async.
+- [x] **Fix stealth.py RuntimeWarning** — `apply_stealth()` sekarang async:
+  `set_extra_http_headers()` dan `add_init_script()` dipanggil dengan `await`.
+  Caller di `session.py` sudah di-update ke `await apply_stealth(...)`.
 
-- [ ] **Install playwright-stealth** — saat ini fallback ke custom scripts.
-  Warning: `playwright-stealth not installed` muncul setiap task.
+- [x] **Install playwright-stealth** — v2.0.3 ter-install di worker/.venv.
+  `session.py` pakai API v2: `Stealth().apply_stealth_async(context)`.
+  Warning "playwright-stealth not installed" tidak muncul lagi.
+
+- [x] **Graceful daily reset** — goroutine `dailyResetLoop()` di orchestrator
+  trigger setiap midnight (local time):
+  - `pool.DailyReset()`: recover used proxies (blacklist tetap permanen)
+  - `scheduler.DailyReset()`: clear semua engine CAPTCHA pauses
+  - `cooldown.DailyReset()`: reset consecutive failure counter
+  - `db.ResetDailyProxyUsage()`: reset used_count=0 untuk active proxies
 
 ### Priority Sedang
 
@@ -98,9 +107,6 @@ Last updated: 2026-08-28
 
 - [ ] **Multiple domain support** — config sudah support list domains,
   tapi belum ditest dengan lebih dari 1 domain.
-
-- [ ] **Graceful daily reset** — saat ini `ResetCycle()` di-call manual saat pool habis.
-  Perlu reset otomatis setiap tengah malam.
 
 ### Priority Rendah
 

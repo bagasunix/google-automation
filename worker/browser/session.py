@@ -177,7 +177,7 @@ class StealthSession:
         await aggressive_resource_blocker(self._context, block_images=False)
 
         # Apply our custom stealth init scripts
-        apply_stealth(self._context, self.profile)
+        await apply_stealth(self._context, self.profile)
 
         # Apply playwright-stealth if available (additional evasion layer)
         await self._apply_playwright_stealth(self._context)
@@ -189,26 +189,12 @@ class StealthSession:
                      self.profile.user_agent[:50], self.profile.timezone)
 
     async def _apply_playwright_stealth(self, context: BrowserContext) -> None:
-        """Try to apply playwright-stealth if the package is installed."""
+        """Apply playwright-stealth v2 as an additional evasion layer."""
         try:
-            from playwright_stealth import stealth_async, StealthConfig
-
-            # playwright-stealth v1.x: apply per-context
-            # Some versions use stealth_sync/stealth_async on pages,
-            # others use StealthConfig. We try the async page approach.
-            try:
-                # v2.x API: StealthConfig applied to context
-                config = StealthConfig()
-                # Apply to all pages via init script
-                await context.add_init_script(
-                    config.get_script() if hasattr(config, 'get_script') else ""
-                )
-                logger.info("playwright-stealth applied (context-level, v2 API)")
-            except Exception:
-                # v1.x API: apply per-page
-                for page in context.pages:
-                    await stealth_async(page)
-                logger.info("playwright-stealth applied (page-level, v1 API)")
+            from playwright_stealth import Stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(context)
+            logger.info("playwright-stealth v2 applied (context-level)")
         except ImportError:
             logger.warning(
                 "playwright-stealth not installed — relying on custom stealth scripts only"
