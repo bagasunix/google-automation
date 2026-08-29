@@ -52,6 +52,7 @@ type SchedulerConfig struct {
 	DistractionExitChance   float64 `yaml:"distraction_exit_chance"`
 	SerpDwellSecondsMin     int     `yaml:"serp_dwell_seconds_min"`
 	SerpDwellSecondsMax     int     `yaml:"serp_dwell_seconds_max"`
+	MaxSearchesPerDomainPerDay int  `yaml:"max_searches_per_domain_per_day"`
 }
 
 // ProxyConfig configures proxy scraping and health checking.

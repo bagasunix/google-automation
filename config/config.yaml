@@ -27,6 +27,7 @@ scheduler:
   distraction_exit_chance: 0.05    # 5% exit ke distraction site (kadang terdistraksi)
   serp_dwell_seconds_min: 2        # min time reading SERP snippets before clicking
   serp_dwell_seconds_max: 5        # max time reading SERP snippets
+  max_searches_per_domain_per_day: 0  # 0 = unlimited; set e.g. 50 untuk multi-domain
 
 proxy:
   refresh_interval_hours: 3
