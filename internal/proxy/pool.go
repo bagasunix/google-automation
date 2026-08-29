@@ -5,8 +5,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"google-automation/internal/bandwidth"
 )
 
 // Pool manages the rotation of proxies with a STRICT 1-proxy-1-search rule:
@@ -32,10 +30,6 @@ type Pool struct {
 
 	// allKnown keeps every proxy the pool has ever held for analytics.
 	allKnown []PooledProxy
-
-	// bwTracker tracks bandwidth per API key; proxies whose key is exhausted
-	// are skipped during Acquire and pushed to the back of the queue.
-	bwTracker *bandwidth.Tracker
 }
 
 // PooledProxy is a proxy enriched with health-check metadata and a DB ID.
@@ -62,21 +56,6 @@ func NewPool() *Pool {
 		quarantined:       make(map[int64]time.Time),
 		consecutiveErrors: make(map[int64]int),
 	}
-}
-
-// SetBandwidthTracker wires the bandwidth tracker so Acquire can skip
-// proxies whose API key has hit the monthly bandwidth cap.
-func (p *Pool) SetBandwidthTracker(t *bandwidth.Tracker) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.bwTracker = t
-}
-
-// BandwidthTracker returns the wired bandwidth tracker (may be nil).
-func (p *Pool) BandwidthTracker() *bandwidth.Tracker {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.bwTracker
 }
 
 // Load replaces the pool contents with a fresh batch of health-checked proxies.
@@ -123,11 +102,14 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 
 	now := time.Now()
 
-	// Scan for the first proxy whose API key still has bandwidth and is not
-	// quarantined. Always inspect the front and rotate skipped ones to the
-	// back — bounded by the original count (checked), not by len(p.available),
-	// which stays constant across rotations and would otherwise never let
-	// this terminate when every proxy is currently unusable.
+	// Scan for the first proxy that isn't quarantined. Bandwidth exhaustion
+	// is handled per-proxy via quarantine (see manager.go's refresh()) —
+	// there's no separate per-key gate here, so one proxy hitting a 402
+	// never blocks the rest of its API key's proxies. Always inspect the
+	// front and rotate skipped ones to the back — bounded by the original
+	// count (checked), not by len(p.available), which stays constant across
+	// rotations and would otherwise never let this terminate when every
+	// proxy is currently unusable.
 	total := len(p.available)
 	for checked := 0; checked < total; checked++ {
 		px := p.available[0]
@@ -141,12 +123,6 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 			}
 			// Quarantine expired — remove
 			delete(p.quarantined, px.ID)
-		}
-
-		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
-			// Key exhausted — rotate this proxy to the back and keep scanning.
-			p.available = append(p.available[1:], px)
-			continue
 		}
 
 		// Usable proxy found — pop it from available.
@@ -263,9 +239,6 @@ func (p *Pool) HasUsableProxy() bool {
 	now := time.Now()
 	for _, px := range p.available {
 		if until, q := p.quarantined[px.ID]; q && now.Before(until) {
-			continue
-		}
-		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
 			continue
 		}
 		return true

@@ -29,32 +29,42 @@ def detect_recaptcha_version(sb) -> str:
       "none"   — no reCAPTCHA detected
     """
     try:
+        # NOTE: sb.execute_script() under CDP mode (uc=True) only strips a
+        # `return` keyword from the LAST line of the script — any earlier
+        # `return` (e.g. inside an `if` for early-exit) is left as illegal
+        # raw JS, throwing a silently-swallowed SyntaxError. This function
+        # always hit that and returned "none" regardless of the real state.
+        # Wrapping the body in an IIFE (with NO leading `return` on the call
+        # itself) makes every internal return legal; the expression's
+        # completion value is what CDP's evaluate naturally returns.
         result = sb.execute_script("""
-            // v2 anchor iframe is the definitive signal for a solvable challenge
-            const v2Anchor = document.querySelector(
-                'iframe[src*="recaptcha"][src*="anchor"]'
-            );
-            if (v2Anchor) return "v2";
+            (function() {
+                // v2 anchor iframe is the definitive signal for a solvable challenge
+                const v2Anchor = document.querySelector(
+                    'iframe[src*="recaptcha"][src*="anchor"]'
+                );
+                if (v2Anchor) return "v2";
 
-            // v3 leaves no visible iframe; it injects a badge or calls grecaptcha.execute
-            const badge = document.querySelector('.grecaptcha-badge');
-            if (badge) return "v3";
+                // v3 leaves no visible iframe; it injects a badge or calls grecaptcha.execute
+                const badge = document.querySelector('.grecaptcha-badge');
+                if (badge) return "v3";
 
-            // Check for v3 execute calls in inline scripts
-            const scripts = Array.from(document.querySelectorAll('script'));
-            for (const s of scripts) {
-                if (s.textContent && s.textContent.includes('grecaptcha.execute')) {
-                    return "v3";
+                // Check for v3 execute calls in inline scripts
+                const scripts = Array.from(document.querySelectorAll('script'));
+                for (const s of scripts) {
+                    if (s.textContent && s.textContent.includes('grecaptcha.execute')) {
+                        return "v3";
+                    }
                 }
-            }
 
-            // v2 checkbox widget (non-iframe embed)
-            const checkbox = document.querySelector(
-                '.g-recaptcha, .recaptcha-checkbox'
-            );
-            if (checkbox) return "v2";
+                // v2 checkbox widget (non-iframe embed)
+                const checkbox = document.querySelector(
+                    '.g-recaptcha, .recaptcha-checkbox'
+                );
+                if (checkbox) return "v2";
 
-            return "none";
+                return "none";
+            })();
         """)
         return result or "none"
     except Exception as e:
@@ -112,14 +122,16 @@ def solve_captcha(sb, max_attempts: int = 3) -> bool:
         # JS-based fallback: click the checkbox inside the reCAPTCHA iframe
         try:
             clicked = sb.execute_script("""
-                const iframes = document.querySelectorAll('iframe[src*="recaptcha"][src*="anchor"]');
-                for (const f of iframes) {
-                    try {
-                        const cb = f.contentDocument.querySelector('.recaptcha-checkbox, #recaptcha-anchor');
-                        if (cb) { cb.click(); return true; }
-                    } catch(e) {}
-                }
-                return false;
+                (function() {
+                    const iframes = document.querySelectorAll('iframe[src*="recaptcha"][src*="anchor"]');
+                    for (const f of iframes) {
+                        try {
+                            const cb = f.contentDocument.querySelector('.recaptcha-checkbox, #recaptcha-anchor');
+                            if (cb) { cb.click(); return true; }
+                        } catch(e) {}
+                    }
+                    return false;
+                })();
             """)
             if clicked:
                 time.sleep(2)
@@ -139,14 +151,16 @@ def _is_solved(sb) -> bool:
     """Check if reCAPTCHA checkbox is marked as checked."""
     try:
         result = sb.execute_script("""
-            const frames = document.querySelectorAll('iframe[src*="recaptcha"]');
-            for (const f of frames) {
-                try {
-                    const cb = f.contentDocument.querySelector('.recaptcha-checkbox');
-                    if (cb && cb.getAttribute('aria-checked') === 'true') return true;
-                } catch (e) {}
-            }
-            return false;
+            (function() {
+                const frames = document.querySelectorAll('iframe[src*="recaptcha"]');
+                for (const f of frames) {
+                    try {
+                        const cb = f.contentDocument.querySelector('.recaptcha-checkbox');
+                        if (cb && cb.getAttribute('aria-checked') === 'true') return true;
+                    } catch (e) {}
+                }
+                return false;
+            })();
         """)
         return bool(result)
     except Exception:

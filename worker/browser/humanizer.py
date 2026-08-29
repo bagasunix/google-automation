@@ -191,13 +191,20 @@ def random_mouse_jitter(sb, duration_s: float = 1.0) -> None:
 
 def get_scroll_depth_percent(sb) -> int:
     try:
+        # IIFE with no leading `return` — sb.execute_script() under CDP mode
+        # only strips `return` from the script's LAST line; the earlier
+        # `if (maxScroll <= 0) return 100;` was left as illegal raw JS,
+        # throwing a SyntaxError caught below and always returning 0 —
+        # regardless of how much the page had actually scrolled.
         result = sb.execute_script("""
-            const scrollTop = window.scrollY || document.documentElement.scrollTop;
-            const scrollHeight = document.documentElement.scrollHeight;
-            const clientHeight = document.documentElement.clientHeight;
-            const maxScroll = scrollHeight - clientHeight;
-            if (maxScroll <= 0) return 100;
-            return Math.min(100, Math.round((scrollTop / maxScroll) * 100));
+            (function() {
+                const scrollTop = window.scrollY || document.documentElement.scrollTop;
+                const scrollHeight = document.documentElement.scrollHeight;
+                const clientHeight = document.documentElement.clientHeight;
+                const maxScroll = scrollHeight - clientHeight;
+                if (maxScroll <= 0) return 100;
+                return Math.min(100, Math.round((scrollTop / maxScroll) * 100));
+            })();
         """)
         return int(result)
     except Exception:

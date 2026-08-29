@@ -6,8 +6,10 @@ Internal link click simulation (sync).
 
 from __future__ import annotations
 
+import json
 import logging
 import random
+import time
 from urllib.parse import urlparse
 
 from browser.humanizer import (
@@ -22,7 +24,18 @@ logger = logging.getLogger("worker.engagement.click")
 
 def _find_internal_links(sb, target_domain: str, limit: int = 10) -> list:
     try:
-        elements = sb.find_elements("article a[href], main a[href], .content a[href], .post a[href]")
+        # Try narrow, content-specific containers first — .post-body is
+        # Blogger's own class (used by bagasunix.com); broader tags like
+        # `article`/`main`/`.post` can span the whole theme (nav + header
+        # included) in some templates, pulling in menu items (Home/category
+        # labels) instead of the in-article related-post links a real
+        # reader would actually click. Only fall back to the broader/looser
+        # selectors, then any link at all, if the narrow ones find nothing.
+        elements = sb.find_elements(
+            ".post-body a[href], .entry-content a[href], [itemprop='articleBody'] a[href]"
+        )
+        if not elements:
+            elements = sb.find_elements("article a[href], main a[href], .content a[href], .post a[href]")
         if not elements:
             elements = sb.find_elements("a[href]")
 
@@ -80,7 +93,10 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
 
             if use_new_tab and href:
                 logger.info("Opening internal link in NEW TAB: %s", text)
-                sb.execute_script("window.open(arguments[0], '_blank');", href)
+                # execute_script() drops extra positional args under CDP mode
+                # (uc=True) — arguments[0] would be undefined there, so
+                # window.open() silently opened a blank tab with no URL.
+                sb.execute_script("window.open(%s, '_blank');" % json.dumps(href))
                 time.sleep(1.5)
                 # Switch to new tab
                 windows = sb.driver.window_handles
@@ -131,7 +147,7 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
             random_pause(1, 2)
 
         except Exception as e:
-            logger.warning("Internal click failed: %s", e)
+            logger.warning("Internal click failed: %s", e, exc_info=True)
             # Ensure we're on the main tab and page
             try:
                 if len(sb.driver.window_handles) > 1:

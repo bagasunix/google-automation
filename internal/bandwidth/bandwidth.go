@@ -114,19 +114,6 @@ func (t *Tracker) save() {
 	}
 }
 
-// Status returns current usage info for an API key.
-// Returns usedKB and whether the key is paused (>= pause threshold).
-func (t *Tracker) Status(apiKeyIndex int) (usedKB float64, paused bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	e, ok := t.entries[storageKey(apiKeyIndex)]
-	if !ok {
-		return 0, false
-	}
-	return e.UsedKB, t.pausedLocked(e.UsedKB)
-}
-
 // RecordUsage adds usedKB to the given API key's monthly total and persists.
 func (t *Tracker) RecordUsage(apiKeyIndex int, usedKB float64) {
 	if usedKB <= 0 {
@@ -153,53 +140,12 @@ func (t *Tracker) RecordUsage(apiKeyIndex int, usedKB float64) {
 		used/t.limitKB*100, map[bool]string{true: " — PAUSED", false: ""}[paused])
 }
 
-// ExhaustKey force-marks an API key as exhausted (sets usage to 100% of limit).
-// Called when the proxy returns HTTP 402 — Webshare confirmed the key is out of bandwidth.
-func (t *Tracker) ExhaustKey(apiKeyIndex int) {
-	t.mu.Lock()
-	k := storageKey(apiKeyIndex)
-	e, ok := t.entries[k]
-	if !ok {
-		e = &entry{}
-		t.entries[k] = e
-	}
-	e.UsedKB = t.limitKB // set to 100% so IsKeyAvailable returns false
-	e.LastUpdated = float64(time.Now().Unix())
-	t.save()
-	t.mu.Unlock()
-	log.Printf("[bandwidth] key#%d force-exhausted (402 from Webshare)", apiKeyIndex)
-}
-
-// ClearExhaustion resets a key's tracked usage below the pause threshold when
-// live evidence (a proxy on that key passing its health check with a 200,
-// not a 402) shows Webshare is no longer blocking it. Without this, a key
-// marked exhausted via ExhaustKey stays exhausted in the local tracker for
-// the rest of the calendar month even if Webshare's own limit already
-// recovered (top-up, quota reset, etc.) — wasting bandwidth that is actually
-// available. Only touches the entry if it is currently above the pause
-// threshold, so it never clobbers a legitimately-tracked lower usage value.
-func (t *Tracker) ClearExhaustion(apiKeyIndex int) {
-	t.mu.Lock()
-	k := storageKey(apiKeyIndex)
-	e, ok := t.entries[k]
-	if !ok || !t.pausedLocked(e.UsedKB) {
-		t.mu.Unlock()
-		return
-	}
-	e.UsedKB = 0
-	e.LastUpdated = float64(time.Now().Unix())
-	t.save()
-	t.mu.Unlock()
-	log.Printf("[bandwidth] key#%d exhaustion cleared — proxy passed live health check, bandwidth available again", apiKeyIndex)
-}
-
-// IsKeyAvailable returns false when the key has hit the pause threshold.
-func (t *Tracker) IsKeyAvailable(apiKeyIndex int) bool {
-	_, paused := t.Status(apiKeyIndex)
-	return !paused
-}
-
-// pausedLocked computes the pause state; caller must hold t.mu.
+// pausedLocked computes the pause state (used only for the informational
+// "— PAUSED" label in RecordUsage's log line); caller must hold t.mu.
+// Bandwidth exhaustion no longer gates which proxies get used — that's
+// handled per-proxy via quarantine on a live 402 (see proxy/manager.go),
+// since one proxy hitting its limit says nothing about the other proxies
+// sharing its API key.
 func (t *Tracker) pausedLocked(usedKB float64) bool {
 	return usedKB >= t.limitKB*t.pausePct/100
 }

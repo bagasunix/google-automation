@@ -16,6 +16,7 @@ Flow (SeleniumBase sync):
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 
@@ -29,17 +30,52 @@ ANCHOR_IFRAME = 'iframe[src*="recaptcha"][src*="anchor"]'
 BFRAME_IFRAME  = 'iframe[src*="recaptcha"][src*="bframe"]'
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+# Signatures of the browser/chromedriver process having died mid-flow (seen
+# repeatedly on this host, likely RAM pressure while rendering the
+# iframe-heavy reCAPTCHA widget) rather than the audio/checkbox element
+# genuinely being absent. When this happens every retry attempt reuses the
+# same (dead) `sb` session and fails identically — logged as "could not
+# click audio button", which reads like the button was never there, when
+# actually the whole browser tab is gone.
+_DEAD_SESSION_SIGNATURES = (
+    "connection refused",
+    "max retries exceeded",
+    "invalid session id",
+    "chrome not reachable",
+    "session deleted because of page crash",
+    "target window already closed",
+)
+
+
+class SessionDeadError(Exception):
+    """Raised when the browser/WebDriver session itself is gone — further
+    retries against the same `sb` object are pointless."""
+
+
+def _check_session_alive(exc: Exception) -> None:
+    msg = str(exc).lower()
+    if any(sig in msg for sig in _DEAD_SESSION_SIGNATURES):
+        raise SessionDeadError(f"browser session appears dead: {exc}") from exc
+
 
 def _is_doscaptcha(sb) -> bool:
     """Check if Google has blocked the audio challenge due to automated queries detection."""
     try:
+        # IIFE, no leading `return` — execute_script() under CDP mode only
+        # strips `return` from the script's last line; the earlier early-exit
+        # `return true;` was illegal raw JS, throwing a SyntaxError that made
+        # this ALWAYS report "no doscaptcha block" even when Google's hard
+        # "automated queries" block was actually showing.
         return sb.execute_script("""
-            const msg = document.querySelector('.rc-doscaptcha-body, .rc-doscaptcha-header, div[class*="doscaptcha"]');
-            if (msg && msg.innerText && msg.innerText.length > 0) return true;
-            const text = document.body ? document.body.innerText : '';
-            return text.includes("automated queries") || text.includes("can't process your request");
+            (function() {
+                const msg = document.querySelector('.rc-doscaptcha-body, .rc-doscaptcha-header, div[class*="doscaptcha"]');
+                if (msg && msg.innerText && msg.innerText.length > 0) return true;
+                const text = document.body ? document.body.innerText : '';
+                return text.includes("automated queries") || text.includes("can't process your request");
+            })();
         """)
-    except Exception:
+    except Exception as e:
+        _check_session_alive(e)
         return False
 
 
@@ -96,6 +132,7 @@ def _click_checkbox(sb) -> bool:
         time.sleep(2.5) # Wait for visual challenge to pop up
         return True
     except Exception as e:
+        _check_session_alive(e)
         logger.exception("checkbox click failed: %s", e)
         try:
             sb.switch_to_default_content()
@@ -121,38 +158,48 @@ def _click_audio_button(sb) -> bool:
                     sb.click(sel)
                     time.sleep(2.5)
                     return True
-            except Exception:
-                pass
+            except Exception as sel_e:
+                _check_session_alive(sel_e)
     except Exception as e:
+        _check_session_alive(e)
         logger.debug("audio button click failed: %s", e)
     return False
 
 
 def _get_audio_src(sb) -> str | None:
     try:
+        # IIFE, no leading `return` — this had FIVE early returns before the
+        # final `return null;`, all illegal raw JS under execute_script()'s
+        # CDP mode (which only strips `return` from the last line). This
+        # function has been throwing a SyntaxError and returning None on
+        # every single call — the audio challenge URL was never actually
+        # found, regardless of whether Google served one.
         return sb.execute_script("""
-            // 1. Audio tag src
-            const a = document.querySelector('audio');
-            if (a && a.src && a.src.startsWith('http')) return a.src;
+            (function() {
+                // 1. Audio tag src
+                const a = document.querySelector('audio');
+                if (a && a.src && a.src.startsWith('http')) return a.src;
 
-            // 2. Audio source tag src
-            const s = document.querySelector('audio source');
-            if (s && s.src && s.src.startsWith('http')) return s.src;
+                // 2. Audio source tag src
+                const s = document.querySelector('audio source');
+                if (s && s.src && s.src.startsWith('http')) return s.src;
 
-            // 3. Modern reCAPTCHA download link
-            const dl = document.querySelector('a.rc-audiochallenge-tdownload-link, a.rc-audiochallenge-download-link, a[href*="/recaptcha/api2/payload"], a[href*="payload?p="]');
-            if (dl && dl.href && dl.href.startsWith('http')) return dl.href;
+                // 3. Modern reCAPTCHA download link
+                const dl = document.querySelector('a.rc-audiochallenge-tdownload-link, a.rc-audiochallenge-download-link, a[href*="/recaptcha/api2/payload"], a[href*="payload?p="]');
+                if (dl && dl.href && dl.href.startsWith('http')) return dl.href;
 
-            // 4. Fallback search across all links in bframe
-            const allLinks = document.querySelectorAll('a[href]');
-            for (const l of allLinks) {
-                if (l.href && l.href.includes('recaptcha') && l.href.includes('payload')) {
-                    return l.href;
+                // 4. Fallback search across all links in bframe
+                const allLinks = document.querySelectorAll('a[href]');
+                for (const l of allLinks) {
+                    if (l.href && l.href.includes('recaptcha') && l.href.includes('payload')) {
+                        return l.href;
+                    }
                 }
-            }
-            return null;
+                return null;
+            })();
         """)
     except Exception as e:
+        _check_session_alive(e)
         logger.debug("audio src read failed: %s", e)
         return None
 
@@ -167,25 +214,33 @@ def _download_audio(sb, audio_src: str) -> bytes | None:
     except Exception as e:
         logger.debug("direct requests download failed: %s", e)
 
-    # Fallback: download through browser (respects session/cookies/proxy)
+    # Fallback: download through browser (respects session/cookies/proxy).
+    # NOTE: sb.execute_async_script(script, timeout=None) does not support
+    # extra positional args at all — passing audio_src as a second arg was
+    # silently landing in the `timeout` parameter instead (a URL string
+    # where a numeric duration was expected), breaking this fallback
+    # entirely. Embed the URL directly into the script instead.
     try:
-        b64 = sb.execute_async_script("""
-            const [url, done] = arguments;
-            fetch(url)
-                .then(r => r.arrayBuffer())
-                .then(buf => {
-                    const bytes = new Uint8Array(buf);
-                    let bin = '';
-                    bytes.forEach(b => bin += String.fromCharCode(b));
-                    done(btoa(bin));
-                })
-                .catch(() => done(null));
-        """, audio_src)
+        b64 = sb.execute_async_script(
+            "const url = %s;"
+            "const done = arguments[arguments.length - 1];"
+            "fetch(url)"
+            "    .then(r => r.arrayBuffer())"
+            "    .then(buf => {"
+            "        const bytes = new Uint8Array(buf);"
+            "        let bin = '';"
+            "        bytes.forEach(b => bin += String.fromCharCode(b));"
+            "        done(btoa(bin));"
+            "    })"
+            "    .catch(() => done(null));"
+            % json.dumps(audio_src)
+        )
         if b64:
             data = base64.b64decode(b64)
             logger.info("audio downloaded via browser fetch: %d bytes", len(data))
             return data
     except Exception as e:
+        _check_session_alive(e)
         logger.debug("browser fetch download failed: %s", e)
 
     return None
@@ -200,8 +255,8 @@ def _submit_answer(sb, answer: str) -> bool:
                     sb.type(sel, answer)
                     time.sleep(0.5)
                     break
-            except Exception:
-                pass
+            except Exception as sel_e:
+                _check_session_alive(sel_e)
 
         # Click verify button
         for btn in ["#recaptcha-verify-button", "button#recaptcha-verify-button", "button[id*='verify']"]:
@@ -210,9 +265,10 @@ def _submit_answer(sb, answer: str) -> bool:
                     sb.click(btn)
                     time.sleep(3)
                     return True
-            except Exception:
-                pass
+            except Exception as btn_e:
+                _check_session_alive(btn_e)
     except Exception as e:
+        _check_session_alive(e)
         logger.debug("submit answer failed: %s", e)
     return False
 
@@ -230,73 +286,81 @@ def solve_sorry_audio(sb, max_attempts: int = 3) -> bool:
         except Exception:
             pass
 
-        if not _click_checkbox(sb):
-            logger.warning("could not click checkbox on attempt %d", attempt)
-            continue
-
-        # Already solved (simple checkbox pass)
         try:
-            if "/sorry/" not in sb.get_current_url():
-                logger.info("solved via checkbox click alone")
-                return True
-        except Exception:
-            pass
+            if not _click_checkbox(sb):
+                logger.warning("could not click checkbox on attempt %d", attempt)
+                continue
 
-        if not _click_audio_button(sb):
-            logger.warning("could not click audio button or DosCaptcha active on attempt %d", attempt)
+            # Already solved (simple checkbox pass)
             try:
-                sb.switch_to_default_content()
+                if "/sorry/" not in sb.get_current_url():
+                    logger.info("solved via checkbox click alone")
+                    return True
             except Exception:
                 pass
-            continue
 
-        # Check for DosCaptcha block after audio click
-        if _is_doscaptcha(sb):
-            logger.warning("Google blocked audio challenge for this IP (DosCaptcha 'automated queries') — skipping audio attempts")
-            try:
-                sb.switch_to_default_content()
-            except Exception:
-                pass
+            if not _click_audio_button(sb):
+                logger.warning("could not click audio button or DosCaptcha active on attempt %d", attempt)
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                continue
+
+            # Check for DosCaptcha block after audio click
+            if _is_doscaptcha(sb):
+                logger.warning("Google blocked audio challenge for this IP (DosCaptcha 'automated queries') — skipping audio attempts")
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                return False
+
+            audio_src = _get_audio_src(sb)
+            if not audio_src:
+                logger.warning("no audio src found on attempt %d", attempt)
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                continue
+
+            logger.info("found audio challenge URL: %s", audio_src[:90])
+
+            audio_bytes = _download_audio(sb, audio_src)
+            if not audio_bytes:
+                logger.warning("audio download failed on attempt %d", attempt)
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                continue
+
+            answer = transcribe_audio(audio_bytes)
+            if not answer:
+                logger.warning("transcription returned empty on attempt %d", attempt)
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                continue
+
+            logger.info("submitting transcription: '%s'", answer)
+
+            if not _submit_answer(sb, answer):
+                logger.warning("submit answer failed on attempt %d", attempt)
+                try:
+                    sb.switch_to_default_content()
+                except Exception:
+                    pass
+                continue
+        except SessionDeadError as e:
+            # Every remaining attempt would reuse this same dead session and
+            # fail identically — stop now instead of burning max_attempts on
+            # a browser tab that's already gone (this previously looked
+            # exactly like "the audio button just isn't there").
+            logger.error("aborting audio_sorry — %s", e)
             return False
-
-        audio_src = _get_audio_src(sb)
-        if not audio_src:
-            logger.warning("no audio src found on attempt %d", attempt)
-            try:
-                sb.switch_to_default_content()
-            except Exception:
-                pass
-            continue
-
-        logger.info("found audio challenge URL: %s", audio_src[:90])
-
-        audio_bytes = _download_audio(sb, audio_src)
-        if not audio_bytes:
-            logger.warning("audio download failed on attempt %d", attempt)
-            try:
-                sb.switch_to_default_content()
-            except Exception:
-                pass
-            continue
-
-        answer = transcribe_audio(audio_bytes)
-        if not answer:
-            logger.warning("transcription returned empty on attempt %d", attempt)
-            try:
-                sb.switch_to_default_content()
-            except Exception:
-                pass
-            continue
-
-        logger.info("submitting transcription: '%s'", answer)
-
-        if not _submit_answer(sb, answer):
-            logger.warning("submit answer failed on attempt %d", attempt)
-            try:
-                sb.switch_to_default_content()
-            except Exception:
-                pass
-            continue
 
         try:
             sb.switch_to_default_content()

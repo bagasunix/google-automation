@@ -57,14 +57,17 @@ func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orc
 	stats := analytics.NewStats(db)
 	serpTracker := analytics.NewSerpTracker(db)
 
-	// Bandwidth tracker: reads/writes data/bandwidth.json (shared with Python worker).
+	// Bandwidth tracker: reads/writes data/bandwidth.json (shared with Python
+	// worker) for the dashboard's usage display only — it no longer gates
+	// which proxies Acquire() can pick. Exhaustion is per-proxy (quarantine
+	// on a live 402, see proxy/manager.go), not per-key, since a 402 on one
+	// proxy says nothing about its key's other 9 proxies.
 	baseDir, _ := os.Getwd()
 	bwTracker := bandwidth.NewTracker(
 		baseDir,
 		cfg.Bandwidth.MonthlyLimitMB,
 		cfg.Bandwidth.PauseThresholdPercent,
 	)
-	proxyMgr.Pool().SetBandwidthTracker(bwTracker)
 
 	var tg *notify.Telegram
 	if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "" {

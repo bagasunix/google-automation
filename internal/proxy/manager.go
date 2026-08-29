@@ -113,19 +113,18 @@ func (m *Manager) refresh() error {
 	}
 
 	// Persist healthy proxies to the DB and build PooledProxy list.
+	//
+	// Bandwidth exhaustion is handled PER-PROXY, not per-key: a 402 on one
+	// proxy only means that one proxy's connection is currently rejected —
+	// it says nothing about the other 9 proxies sharing the same API key,
+	// which are very likely still within budget (Webshare's own dashboard
+	// can show e.g. 59% used on a key while individual proxy 402s were
+	// already blocking 100% of that key's traffic here). Quarantining just
+	// the one proxy — the same mechanism already used for CAPTCHA hits —
+	// keeps the rest of that key's proxies in rotation.
+	const bandwidthQuarantine = 1 * time.Hour
 	var pooled []PooledProxy
 	for _, r := range results {
-		if m.pool.BandwidthTracker() != nil {
-			if r.BandwidthExhausted {
-				// Proxy returned 402 — force-exhaust the key.
-				m.pool.BandwidthTracker().ExhaustKey(r.Proxy.APIKeyIndex)
-			} else if r.Healthy {
-				// Proxy passed live (200 OK, not 402) — this key is
-				// currently NOT blocked by Webshare, even if a stale local
-				// record still marks it exhausted from earlier this month.
-				m.pool.BandwidthTracker().ClearExhaustion(r.Proxy.APIKeyIndex)
-			}
-		}
 		sp := &storage.Proxy{
 			IP:        r.Proxy.IP,
 			Port:      r.Proxy.Port,
@@ -142,7 +141,7 @@ func (m *Manager) refresh() error {
 			log.Printf("[proxy-manager] failed to upsert proxy %s:%d: %v", r.Proxy.IP, r.Proxy.Port, err)
 			continue
 		}
-		pooled = append(pooled, PooledProxy{
+		px := PooledProxy{
 			ID:          id,
 			IP:          r.Proxy.IP,
 			Port:        r.Proxy.Port,
@@ -153,7 +152,11 @@ func (m *Manager) refresh() error {
 			Username:    r.Proxy.Username,
 			Password:    r.Proxy.Password,
 			APIKeyIndex: r.Proxy.APIKeyIndex,
-		})
+		}
+		if r.BandwidthExhausted {
+			m.pool.Quarantine(px, bandwidthQuarantine, "bandwidth exhausted (402)")
+		}
+		pooled = append(pooled, px)
 	}
 
 	m.pool.Load(pooled)

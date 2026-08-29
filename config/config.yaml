@@ -21,7 +21,7 @@ scheduler:
                                     # so raising it here scales both sides together.
                                     # Bounded by available RAM: each slot = 1 full
                                     # Chrome instance. Tune down if the host swaps.
-  max_search_per_proxy: 1          # testing: 1 search per proxy
+  max_search_per_proxy: 5          # testing: 5 search per proxy (was 1 — 12 active proxies × 1 = only 12/day, already hit)
   new_article_boost: 5             # first week: 5 searches
   regular_max: 3                   # after boost: 3 searches max
   captcha_pause_hours: 3           # auto pause when CAPTCHA spike

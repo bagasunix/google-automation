@@ -519,6 +519,24 @@ func main() {
 			http.ServeFile(w, r, "web/static/favicon.png")
 		})
 
+		// Public: PWA endpoints
+		http.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"name":"Google Automation Dashboard","short_name":"GAutoDash","start_url":"/","display":"standalone","background_color":"#0b0f19","theme_color":"#0b0f19","icons":[{"src":"/static/pwa-icon.jpg","sizes":"192x192","type":"image/jpeg"},{"src":"/static/pwa-icon.jpg","sizes":"512x512","type":"image/jpeg"}]}`)
+		})
+		http.HandleFunc("/sw.js", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/javascript")
+			fmt.Fprint(w, `const CACHE_NAME = 'gautodash-v1';
+const urlsToCache = ['/static/favicon.png', '/static/pwa-icon.jpg'];
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache)));
+});
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+});`)
+		})
+
 		// Public: Login Page with Brute-Force Rate Limiting
 		http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 			enabled, validUser, validPass := getAuthConfig()
@@ -1422,6 +1440,9 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign In • Google Automation Suite</title>
 <link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0b0f19">
+<link rel="apple-touch-icon" href="/static/pwa-icon.jpg">
 <style>
   :root { --bg: #0b0f19; --card: #161f30; --text: #f8fafc; --muted: #94a3b8; --border: #334155; --primary: #6366f1; --primary-hover: #4f46e5; --danger: #ef4444; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1461,6 +1482,13 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
     <button type="submit" class="btn-submit">Sign In to Dashboard</button>
   </form>
 </div>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').then(r => console.log('SW', r.scope)).catch(e => console.log('SW err', e));
+    });
+  }
+</script>
 </body>
 </html>`))
 
@@ -1472,6 +1500,9 @@ var tmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE html>
 <title>Google Automation Control Panel</title>
 <link rel="icon" type="image/png" href="/static/favicon.png">
 <link rel="shortcut icon" href="/static/favicon.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0b0f19">
+<link rel="apple-touch-icon" href="/static/pwa-icon.jpg">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root { --bg: #0b0f19; --card: #161f30; --card-hover: #1e293b; --text: #f8fafc; --muted: #94a3b8; --border: #334155; --primary: #6366f1; --primary-hover: #4f46e5; --success: #10b981; --danger: #ef4444; --warning: #f59e0b; }
@@ -2944,6 +2975,11 @@ var tmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE html>
       }
     }
   });
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js');
+    });
+  }
 </script>
 </body>
 </html>
