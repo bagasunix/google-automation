@@ -95,25 +95,30 @@ func getAuthConfig() (enabled bool, user, pass string) {
 	user = "admin"
 	pass = "bagasunix2026"
 
+	// config.yaml may still set `enabled` (not a secret, fine to version
+	// control) but username/password are no longer read from it — .env is
+	// the single source of truth for credentials, checked below.
 	if data, err := os.ReadFile("config/config.yaml"); err == nil {
 		var cfg struct {
 			Auth struct {
-				Enabled  *bool  `yaml:"enabled"`
-				Username string `yaml:"username"`
-				Password string `yaml:"password"`
+				Enabled *bool `yaml:"enabled"`
 			} `yaml:"auth"`
 		}
-		if err := yaml.Unmarshal(data, &cfg); err == nil {
-			if cfg.Auth.Enabled != nil {
-				enabled = *cfg.Auth.Enabled
-			}
-			if cfg.Auth.Username != "" {
-				user = cfg.Auth.Username
-			}
-			if cfg.Auth.Password != "" {
-				pass = cfg.Auth.Password
-			}
+		if err := yaml.Unmarshal(data, &cfg); err == nil && cfg.Auth.Enabled != nil {
+			enabled = *cfg.Auth.Enabled
 		}
+	}
+
+	envMap := loadEnvFile(".env")
+	if v := os.Getenv("DASHBOARD_USERNAME"); v != "" {
+		user = v
+	} else if v := envMap["DASHBOARD_USERNAME"]; v != "" {
+		user = v
+	}
+	if v := os.Getenv("DASHBOARD_PASSWORD"); v != "" {
+		pass = v
+	} else if v := envMap["DASHBOARD_PASSWORD"]; v != "" {
+		pass = v
 	}
 
 	if envUser := os.Getenv("DASHBOARD_USERNAME"); envUser != "" {

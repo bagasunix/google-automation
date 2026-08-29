@@ -294,10 +294,13 @@ def _transcribe_google_cloud(wav_path: str) -> Optional[str]:
 
 def _transcribe_openai_api(wav_path: str) -> Optional[str]:
     cfg = _load_captcha_config()
+    # .env is the single source of truth for secrets — check it first so a
+    # rotated key there always wins, instead of silently falling back to a
+    # stale value left in config.yaml.
     api_key = (
-        cfg.get("openai_api_key")
-        or os.environ.get("OPENAI_API_KEY")
+        os.environ.get("OPENAI_API_KEY")
         or os.environ.get("GROQ_API_KEY")
+        or cfg.get("openai_api_key")
     )
     base_url = cfg.get("openai_base_url")  # e.g. https://api.groq.com/openai/v1
     model = cfg.get("openai_model", "whisper-large-v3-turbo" if "groq" in (base_url or "") else "whisper-1")
@@ -371,7 +374,7 @@ def validate_backend() -> bool:
         return True
 
     if backend == "openai_api":
-        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or cfg.get("openai_api_key")
         if not api_key:
             logger.info(
                 "CAPTCHA backend 'openai_api': no API key configured. Will use 'google_web' and 'whisper' fallback."

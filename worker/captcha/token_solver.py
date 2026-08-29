@@ -261,11 +261,14 @@ def solve_sorry_page(sb, max_attempts: int = 2) -> bool:
     """
     cfg = _load_config()
     backend = cfg.get("token_solver", "capsolver")
-    api_key = cfg.get("token_solver_key", "")
+    # .env is the single source of truth for secrets — TOKEN_SOLVER_KEY was
+    # documented in config.yaml's comments but never actually read; check it
+    # first, falling back to config.yaml for anyone still setting it there.
+    api_key = os.environ.get("TOKEN_SOLVER_KEY") or cfg.get("token_solver_key", "")
 
     if not api_key:
         logger.error(
-            "token_solver_key not set in config.yaml captcha section — cannot solve /sorry/ page"
+            "TOKEN_SOLVER_KEY not set in .env (or token_solver_key in config.yaml) — cannot solve /sorry/ page"
         )
         return False
 

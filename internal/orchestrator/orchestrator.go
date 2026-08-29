@@ -154,10 +154,19 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		concurrency = 2
 	}
 	fm := GetFleetManager(concurrency)
-	log.Printf("[orchestrator] Fleet Manager initialized with %d workers", concurrency)
-	fm.Log(0, "SYSTEM", "INFO", fmt.Sprintf("Orchestrator started with %d workers", concurrency))
 
-	go o.fleetControlPollLoop(fm)
+	// Apply any standing dashboard-requested concurrency BEFORE launching
+	// worker goroutines — without this synchronous check, there was a ~3s
+	// window at every startup where worker slots ran at config.yaml's
+	// default instead of the live-set value, letting more browser sessions
+	// spin up simultaneously than intended.
+	baseDir, _ := os.Getwd()
+	lastApplied := applyFleetControlIfNewer(fm, baseDir, time.Time{})
+
+	log.Printf("[orchestrator] Fleet Manager initialized with %d workers", fm.GetConcurrency())
+	fm.Log(0, "SYSTEM", "INFO", fmt.Sprintf("Orchestrator started with %d workers", fm.GetConcurrency()))
+
+	go o.fleetControlPollLoop(fm, lastApplied)
 	go o.proxyExhaustionAlertLoop(fm)
 
 	// Launch concurrent worker loops
@@ -462,26 +471,33 @@ func (o *Orchestrator) processResult(taskID int64, articleID int64, resp *pb.Tas
 // dashboard runs in a different OS process and can only write its request to
 // disk, so this process must poll for it and apply it to its own
 // FleetManager — the one that actually gates active worker slots.
-func (o *Orchestrator) fleetControlPollLoop(fm *FleetManager) {
+// applyFleetControlIfNewer reads fleet_control.json and applies its
+// concurrency to fm if it's newer than lastApplied. Returns the (possibly
+// updated) lastApplied timestamp.
+func applyFleetControlIfNewer(fm *FleetManager, baseDir string, lastApplied time.Time) time.Time {
+	ctrl, err := ReadFleetControl(baseDir)
+	if err != nil || ctrl == nil {
+		return lastApplied
+	}
+	if ctrl.RequestedAt.After(lastApplied) && ctrl.Concurrency != fm.GetConcurrency() {
+		fm.SetConcurrency(ctrl.Concurrency)
+		log.Printf("[orchestrator] concurrency changed to %d via dashboard control", ctrl.Concurrency)
+		return ctrl.RequestedAt
+	}
+	return lastApplied
+}
+
+func (o *Orchestrator) fleetControlPollLoop(fm *FleetManager, lastApplied time.Time) {
 	baseDir, _ := os.Getwd()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
-	var lastApplied time.Time
 	for {
 		select {
 		case <-o.stopCh:
 			return
 		case <-ticker.C:
-			ctrl, err := ReadFleetControl(baseDir)
-			if err != nil || ctrl == nil {
-				continue
-			}
-			if ctrl.RequestedAt.After(lastApplied) && ctrl.Concurrency != fm.GetConcurrency() {
-				fm.SetConcurrency(ctrl.Concurrency)
-				log.Printf("[orchestrator] concurrency changed to %d via dashboard control", ctrl.Concurrency)
-				lastApplied = ctrl.RequestedAt
-			}
+			lastApplied = applyFleetControlIfNewer(fm, baseDir, lastApplied)
 		}
 	}
 }

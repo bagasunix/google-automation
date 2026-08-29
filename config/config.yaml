@@ -3,8 +3,8 @@
 
 auth:
   enabled: true
-  username: "admin"
-  password: "bagasunix2026"
+  # username/password live in .env only (DASHBOARD_USERNAME / DASHBOARD_PASSWORD)
+  # — never put real credentials here, this file is tracked by git.
 
 domains:
   - bagasunix.com
@@ -44,12 +44,13 @@ scheduler:
 proxy:
   refresh_interval_hours: 3
   health_check_timeout: 8
-  # Legacy single key (backward compat) — akan diabaikan jika webshare_api_keys diisi
+  # Keys live in .env only (WEBSHARE_API_KEYS, comma-separated) — never put
+  # real keys here, this file is tracked by git. These stay empty; .env
+  # always overrides them anyway (see applyEnvOverrides in config.go), but
+  # leaving real values here too was exactly the kind of two-sources-of-
+  # truth drift that's easy to lose track of when rotating a key.
   webshare_api_key: ""
-  # Multi-key rotation: jika kosong, akan dimuat dari WEBSHARE_API_KEYS di .env
-  webshare_api_keys:
-    - "4o2y8qp2pijurc2gefxjnsyff53ljmhqnsa6zjg6"
-    - "h5v1f7iv613kg03wvtlbd4os97bnk1b72y983lrj"
+  webshare_api_keys: []
   sources: []
   # sources (disabled — hanya pakai Webshare API):
     # GitHub raw lists
@@ -75,12 +76,12 @@ captcha:
   solver: "openai_api"         # "openai_api" (Groq/OpenAI) | "google_web" | "whisper" (local)
   whisper_model: "base"        # "base" (~70MB, cepat) | "small" (~140MB)
   # --- openai_api backend (OpenAI, Groq, atau provider lain yang OpenAI-compatible) ---
-  openai_api_key: ""
+  openai_api_key: ""           # keep empty — set OPENAI_API_KEY or GROQ_API_KEY in .env
   openai_base_url: "https://api.groq.com/openai/v1"  # kosongkan untuk OpenAI default
   openai_model: "whisper-large-v3-turbo"             # model STT di provider tersebut
   # --- token injection solver untuk Google /sorry/ reCAPTCHA v2 ---
   token_solver: "capsolver"    # "capsolver" | "2captcha"
-  token_solver_key: ""         # atau set TOKEN_SOLVER_KEY di .env
+  token_solver_key: ""         # keep empty — set TOKEN_SOLVER_KEY in .env
 
 bandwidth:
   monthly_limit_mb: 1024      # Webshare free plan = 1GB per key per month
