@@ -6,8 +6,6 @@ services:
       dockerfile: Dockerfile.worker
     container_name: ga-worker
     restart: unless-stopped
-    ports:
-      - "50051:50051"
     volumes:
       - screenshots:/app/screenshots
       - results:/app/results
