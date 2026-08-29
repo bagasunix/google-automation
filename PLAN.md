@@ -110,8 +110,10 @@ Last updated: 2026-08-28
 
 ### Priority Rendah
 
-- [ ] **Analytics dashboard** — export stats ke HTML/CSV untuk monitoring mingguan.
-- [ ] **Telegram notif** — kirim summary harian (tasks, success rate, SERP positions) via bot.
+- [x] **Analytics dashboard** — export stats ke HTML/CSS untuk monitoring mingguan.
+  `cmd/dashboard/main.go` → `go run ./cmd/dashboard/` → `analytics/dashboard.html`.
+- [x] **Telegram notif** — kirim summary harian (tasks, success rate, SERP positions) via bot.
+  `internal/notify/telegram.go`, hook ke `performDailyReset()`. Config: `telegram:` di config.yaml.
 - [ ] **Docker Compose** — sudah ada DOCKER.md, belum ditest di production.
 - [ ] **Rate limiter per domain** — kalau multi-domain, limit search per domain per hari.
 
