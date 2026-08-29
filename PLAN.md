@@ -115,7 +115,7 @@ Last updated: 2026-08-28
 - [x] **Telegram notif** — kirim summary harian (tasks, success rate, SERP positions) via bot.
   `internal/notify/telegram.go`, hook ke `performDailyReset()`. Config: `telegram:` di config.yaml.
 - [x] **Docker Compose** — tested dan running. Fix: hapus host port binding worker (konflikt dengan host process). `docker compose up -d` → kedua container healthy.
-- [ ] **Rate limiter per domain** — kalau multi-domain, limit search per domain per hari.
+- [x] **Rate limiter per domain** — `max_searches_per_domain_per_day` di config. 0 = unlimited. Check di orchestrator setelah spread check.
 
 ---
 
