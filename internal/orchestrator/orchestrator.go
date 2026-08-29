@@ -18,6 +18,7 @@ import (
 	"google-automation/internal/config"
 	grpcclient "google-automation/internal/grpc"
 	pb "google-automation/internal/grpc/proto"
+	"google-automation/internal/notify"
 	"google-automation/internal/proxy"
 	"google-automation/internal/scheduler"
 	"google-automation/internal/storage"
@@ -37,6 +38,7 @@ type Orchestrator struct {
 	serp      *analytics.SerpTracker
 	grpc      *grpcclient.Client
 	bwTracker *bandwidth.Tracker
+	telegram  *notify.Telegram
 
 	// running tracks whether the loop should continue.
 	running bool
@@ -64,6 +66,11 @@ func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orc
 	)
 	proxyMgr.Pool().SetBandwidthTracker(bwTracker)
 
+	var tg *notify.Telegram
+	if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" && cfg.Telegram.ChatID != "" {
+		tg = notify.NewTelegram(cfg.Telegram.BotToken, cfg.Telegram.ChatID)
+	}
+
 	return &Orchestrator{
 		cfg:       cfg,
 		db:        db,
@@ -77,6 +84,7 @@ func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orc
 		serp:      serpTracker,
 		grpc:      grpcClient,
 		bwTracker: bwTracker,
+		telegram:  tg,
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -367,6 +375,8 @@ func (o *Orchestrator) dailyResetLoop() {
 func (o *Orchestrator) performDailyReset() {
 	log.Println("[orchestrator] === midnight daily reset ===")
 
+	o.sendDailySummaryNotif()
+
 	o.pool.DailyReset()
 	o.scheduler.DailyReset()
 	o.cooldown.DailyReset()
@@ -376,6 +386,23 @@ func (o *Orchestrator) performDailyReset() {
 	}
 
 	log.Println("[orchestrator] daily reset complete — starting fresh day")
+}
+
+// sendDailySummaryNotif sends today's summary to Telegram if configured.
+func (o *Orchestrator) sendDailySummaryNotif() {
+	if o.telegram == nil {
+		return
+	}
+	summary, err := o.stats.TodaySummary()
+	if err != nil {
+		log.Printf("[orchestrator] telegram: failed to get summary: %v", err)
+		return
+	}
+	if err := o.telegram.SendDailySummary(summary); err != nil {
+		log.Printf("[orchestrator] telegram: send failed: %v", err)
+		return
+	}
+	log.Println("[orchestrator] telegram: daily summary sent")
 }
 
 // timeUntilNextMidnight returns the duration until the next local midnight.
