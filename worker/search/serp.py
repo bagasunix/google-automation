@@ -1,63 +1,37 @@
 """
 search/serp.py
 ==============
-SERP (Search Engine Results Page) parsing and target domain finding.
-
-Responsibilities:
-  - Parse Google SERP results from the rendered page
-  - Parse Bing SERP results
-  - Find the target domain in the results and return its position
-  - Detect CAPTCHA / "unusual traffic" pages (Google & Bing)
-  - SERP click position variation strategies:
-      50% direct click
-      30% scroll past target then back
-      20% click competitor first then back to SERP then click target
-
-The SERP parsing uses Playwright's DOM evaluation (page.evaluate / query_selector_all)
-with BeautifulSoup as a fallback parser. Google/Bing SERP HTML structures change
-frequently, so selectors are kept flexible with multiple fallbacks.
+SERP parsing and target domain finding (SeleniumBase sync).
 """
 
 from __future__ import annotations
 
-import asyncio
 import random
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import Optional
 from urllib.parse import urlparse
 
-from browser.humanizer import (
-    human_scroll,
-    human_click_element,
-    random_pause,
-    mouse_bezier,
-)
+from browser.humanizer import human_scroll, human_click_element, random_pause, mouse_bezier
 
 logger = logging.getLogger("worker.search.serp")
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
 @dataclass
 class SerpResult:
-    """A single SERP result entry."""
-    position: int             # 1-indexed position on the page
+    position: int
     title: str
     url: str
     domain: str
     snippet: str = ""
-    element_ref = None        # Playwright ElementHandle (not serialised)
+    element_ref = None
 
 
 @dataclass
 class SerpSearchOutcome:
-    """Outcome of searching for the target domain in the SERP."""
     found: bool = False
-    position: int = 0         # 0 = not found
-    target_element_ref = None # ElementHandle of the target result
+    position: int = 0
+    target_element_ref = None
     total_results: int = 0
     results: list = field(default_factory=list)
     captcha_hit: bool = False
@@ -68,513 +42,334 @@ class SerpSearchOutcome:
 # CAPTCHA detection
 # ---------------------------------------------------------------------------
 
-# Google CAPTCHA / unusual traffic indicators
 GOOGLE_CAPTCHA_INDICATORS = [
     "unusual traffic",
     "detected unusual traffic",
     "Our systems have detected",
     "g-recaptcha",
     "captcha",
-    "Sorry/images/google.gif",
-    "ipv4.google.com/sorry",
     "/sorry/",
-    "Our systems have detected unusual traffic",
+    "ipv4.google.com/sorry",
 ]
 
-# Bing CAPTCHA indicators
 BING_CAPTCHA_INDICATORS = [
-    "To continue, please type the characters",
-    "Bing Captcha",
-    "Verify you are a human",
-    "are you a robot",
-    "blocked",
-    "blocked this site",
     "captcha",
+    "are you a human",
+    "robot",
+    "automated queries",
 ]
 
 
-async def detect_captcha(page, engine: str = "google") -> bool:
-    """
-    Check whether the current page is a CAPTCHA / "unusual traffic" page.
-
-    Checks:
-      1. Page title for known CAPTCHA strings
-      2. Page URL for CAPTCHA redirect paths (e.g. /sorry/)
-      3. Page body text for CAPTCHA indicators
-    """
-    engine_indicators = GOOGLE_CAPTCHA_INDICATORS if engine == "google" else BING_CAPTCHA_INDICATORS
-
+def detect_captcha(sb, engine: str = "google") -> bool:
     try:
-        title = await page.title()
-        url = page.url
-
-        # Check URL for CAPTCHA redirect
-        url_lower = url.lower()
-        if "/sorry/" in url_lower or "sorry/index" in url_lower:
-            logger.warning("CAPTCHA detected: URL redirect to sorry page: %s", url)
+        url = sb.get_current_url().lower()
+        # URL-based detection is most reliable — false positives rare
+        url_indicators = ["/sorry/", "ipv4.google.com/sorry", "bing.com/images/captcha"]
+        if any(ind in url for ind in url_indicators):
             return True
-
-        # Check title
-        title_lower = title.lower()
-        for indicator in engine_indicators:
-            if indicator.lower() in title_lower:
-                logger.warning("CAPTCHA detected: title contains '%s'", indicator)
-                return True
-
-        # Check body text (sample first 2000 chars for performance)
-        body_text = await page.evaluate("""
-            () => document.body ? document.body.innerText.substring(0, 2000) : ''
-        """)
-        body_lower = body_text.lower()
-        for indicator in engine_indicators:
-            if indicator.lower() in body_lower:
-                logger.warning("CAPTCHA detected: body contains '%s'", indicator)
-                return True
-
-        # Check for reCAPTCHA iframe (Google-specific)
-        recaptcha = await page.evaluate("""
-            () => {
-                const iframe = document.querySelector('iframe[src*="recaptcha"]');
-                return iframe !== null;
-            }
-        """)
-        if recaptcha:
-            logger.warning("CAPTCHA detected: reCAPTCHA iframe found")
-            return True
-
-    except Exception as e:
-        logger.warning("Error during CAPTCHA detection: %s", e)
-
-    return False
-
-
-# ---------------------------------------------------------------------------
-# SERP parsing
-# ---------------------------------------------------------------------------
-
-async def parse_google_serp(page) -> list[SerpResult]:
-    """
-    Parse Google SERP results from the rendered page.
-
-    Google's result structure changes frequently. We try multiple selector
-    strategies and fall back gracefully.
-
-    Primary strategy: div.g > div[data-href] or a[href] (organic results)
-    Fallback: div[data-sokoban-container] > div > div
-    """
-    results = []
-
-    # Strategy 1: Standard organic result containers (div.g)
-    # Each result typically has: a link (a[href]), a title (h3), and a snippet
-    raw_results = await page.evaluate("""
-        () => {
-            const results = [];
-            // Google's organic results are in div.g elements
-            const blocks = document.querySelectorAll('div.g, div[data-sokoban-container] > div');
-            blocks.forEach((block, idx) => {
-                const link = block.querySelector('a[href]');
-                const titleEl = block.querySelector('h3');
-                const snippetEl = block.querySelector('[data-sncf], .IsZvec, .VwiC3b, .B6xPof');
-
-                if (link && titleEl) {
-                    results.push({
-                        index: idx,
-                        href: link.href,
-                        title: titleEl.textContent,
-                        snippet: snippetEl ? snippetEl.textContent : '',
-                    });
-                }
-            });
-            return results;
-        }
-    """)
-
-    if not raw_results:
-        # Fallback: try broader selectors
-        logger.debug("Primary Google SERP selectors returned nothing, trying fallback")
-        raw_results = await page.evaluate("""
-            () => {
-                const results = [];
-                const links = document.querySelectorAll('a[href^="http"]');
-                for (const link of links) {
-                    const titleEl = link.querySelector('h3') || link.closest('div')?.querySelector('h3');
-                    if (titleEl && !link.href.includes('google.com') && !link.href.includes('webcache.')) {
-                        results.push({
-                            index: results.length,
-                            href: link.href,
-                            title: titleEl.textContent,
-                            snippet: '',
-                        });
-                    }
-                }
-                return results;
-            }
-        """)
-
-    for i, r in enumerate(raw_results):
-        url = r.get("href", "")
-        if not url or "google.com" in url or "webcache." in url:
-            continue
-
-        domain = _extract_domain(url)
-        results.append(SerpResult(
-            position=i + 1,
-            title=r.get("title", ""),
-            url=url,
-            domain=domain,
-            snippet=r.get("snippet", ""),
-        ))
-
-    # Filter out non-organic results (ads, etc.) — Google ads have different containers
-    results = [r for r in results if r.url.startswith("http")]
-
-    logger.info("Parsed %d Google SERP results", len(results))
-    return results
-
-
-async def parse_bing_serp(page) -> list[SerpResult]:
-    """
-    Parse Bing SERP results from the rendered page.
-
-    Bing organic results are in li.b_algo containers, each with an h2 > a link.
-    """
-    # Wait for results to appear before parsing
-    try:
-        await page.wait_for_selector("li.b_algo, li.b_algoSite, #b_results", timeout=8000)
+        # Check for visible reCAPTCHA element (not just source text which has false positives)
+        has_recaptcha = sb.execute_script(
+            "return !!document.querySelector('.g-recaptcha, iframe[src*=\"recaptcha\"][src*=\"anchor\"]')"
+        )
+        return bool(has_recaptcha)
     except Exception:
-        pass  # Continue anyway — might still have results
+        return False
 
-    raw_results = await page.evaluate("""
-        () => {
-            const results = [];
-            // Try primary selectors first, fallback to broader selectors
-            let blocks = document.querySelectorAll('li.b_algo, li.b_algoSite');
-            if (blocks.length === 0) {
-                // Fallback: any list item with an h2 link in results area
-                blocks = document.querySelectorAll('#b_results li');
-            }
-            blocks.forEach((block, idx) => {
-                const link = block.querySelector('h2 a, a.tilk');
-                const titleEl = block.querySelector('h2');
-                const snippetEl = block.querySelector('.b_caption p, p');
 
-                if (link && link.href && link.href.startsWith('http')) {
-                    results.push({
-                        index: idx,
-                        href: link.href,
-                        title: titleEl ? titleEl.textContent : link.textContent,
-                        snippet: snippetEl ? snippetEl.textContent : '',
-                    });
-                }
-            });
-            return results;
-        }
-    """)
+# ---------------------------------------------------------------------------
+# SERP parsing — Google
+# ---------------------------------------------------------------------------
 
+GOOGLE_RESULT_SELECTORS = [
+    "div.g",
+    "div[data-sokoban-container]",
+    "div.tF2Cxc",
+    "div.yuRUbf",
+]
+
+
+def _parse_google_serp(sb, start_offset: int = 1) -> list[SerpResult]:
     results = []
-    for i, r in enumerate(raw_results):
-        url = r.get("href", "")
-        if not url:
-            continue
-        domain = _extract_domain(url)
-        results.append(SerpResult(
-            position=i + 1,
-            title=r.get("title", ""),
-            url=url,
-            domain=domain,
-            snippet=r.get("snippet", ""),
-        ))
+    position = start_offset
 
-    logger.info("Parsed %d Bing SERP results", len(results))
-    if len(results) == 0:
-        try:
-            import os, time as _time
-            page_url = page.url
-            page_title = await page.title()
-            logger.warning("0 Bing results — URL: %s | Title: %s", page_url[:120], page_title[:80])
-            os.makedirs("/home/bagasunix/Project/google-automation/screenshots", exist_ok=True)
-            path = f"/home/bagasunix/Project/google-automation/screenshots/debug_bing_0results_{int(_time.time())}.png"
-            await page.screenshot(path=path, full_page=False)
-            logger.warning("0 Bing results — debug screenshot: %s", path)
-        except Exception as e:
-            logger.warning("Debug screenshot failed: %s", e)
-    return results
-
-
-def parse_serp(results: list[SerpResult], target_domain: str) -> SerpSearchOutcome:
-    """
-    Find the target domain in the parsed SERP results (pure function, no page needed).
-
-    Args:
-        results:        List of SerpResult objects (from parse_google_serp / parse_bing_serp)
-        target_domain:  The domain to find (e.g. "bagasunix.com")
-
-    Returns:
-        SerpSearchOutcome with found=True and position if the domain is found.
-    """
-    outcome = SerpSearchOutcome(total_results=len(results))
-    target_domain_clean = target_domain.lower().lstrip("www.")
-
-    for result in results:
-        result_domain_clean = result.domain.lower().lstrip("www.")
-        if target_domain_clean in result_domain_clean or result_domain_clean in target_domain_clean:
-            outcome.found = True
-            outcome.position = result.position
-            outcome.target_element_ref = result.element_ref
-            outcome.results = results
-            logger.info("Target domain '%s' found at SERP position %d", target_domain, result.position)
-            return outcome
-
-    outcome.results = results
-    logger.info("Target domain '%s' NOT found in SERP (checked %d results)", target_domain, len(results))
-    return outcome
-
-
-async def find_target_in_serp(
-    page,
-    target_domain: str,
-    engine: str = "google",
-) -> SerpSearchOutcome:
-    """
-    Full workflow: parse the current SERP page and find the target domain.
-
-    Checks page 1 first, then page 2 if not found.
-    Returns SerpSearchOutcome with position (0 = not found) and captcha flag.
-    """
-    from captcha.solver import solve_recaptcha
-
-    # First check for CAPTCHA
-    captcha = await detect_captcha(page, engine)
-    if captcha:
-        logger.warning("CAPTCHA on SERP — attempting audio solve")
-        solved = await solve_recaptcha(page, max_attempts=3)
-        if not solved:
-            return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on SERP — audio solve failed")
-        await random_pause(2, 4)
-
-    # Parse the current page
-    if engine == "google":
-        results = await parse_google_serp(page)
-    else:
-        results = await parse_bing_serp(page)
-
-    outcome = parse_serp(results, target_domain)
-
-    # If not found on page 1, try page 2
-    if not outcome.found:
-        logger.info("Target not on page 1, checking page 2")
-
-        # Get the element handles for clicking later
-        await _attach_element_handles(page, results, engine)
-
-        page2_clicked = await _go_to_page_2(page, engine)
-        if page2_clicked:
-            await random_pause(1.0, 2.0)
-
-            # Check CAPTCHA again
-            captcha2 = await detect_captcha(page, engine)
-            if captcha2:
-                logger.warning("CAPTCHA on page 2 — attempting audio solve")
-                solved2 = await solve_recaptcha(page, max_attempts=3)
-                if not solved2:
-                    return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on page 2 — audio solve failed")
-                await random_pause(2, 4)
-
-            if engine == "google":
-                results_p2 = await parse_google_serp(page)
-            else:
-                results_p2 = await parse_bing_serp(page)
-
-            # Positions on page 2 are offset by 10 (Google) or ~13 (Bing)
-            offset = 10 if engine == "google" else 13
-            for r in results_p2:
-                r.position += offset
-
-            outcome_p2 = parse_serp(results_p2, target_domain)
-            if outcome_p2.found:
-                return outcome_p2
-
-    # Attach element handles for clicking
-    await _attach_element_handles(page, outcome.results, engine)
-
-    return outcome
-
-
-async def _attach_element_handles(page, results: list[SerpResult], engine: str) -> None:
-    """
-    Attach Playwright ElementHandle references to each SerpResult.
-
-    This is needed because page.evaluate returns plain JSON (no DOM references),
-    but we need the actual element to click on it later.
-    """
+    # Try JS-based extraction first (most reliable)
     try:
-        if engine == "google":
-            elements = await page.query_selector_all("div.g a[href], div[data-sokoban-container] a[href]")
-        else:
-            elements = await page.query_selector_all("li.b_algo h2 a, li.b_algoSite a")
+        raw = sb.execute_script("""
+            const results = [];
+            const containers = document.querySelectorAll('div.g, div.tF2Cxc, div[data-sokoban-container]');
+            for (const c of containers) {
+                const a = c.querySelector('h3 a, a h3, a[href]');
+                const h3 = c.querySelector('h3');
+                const snippet = c.querySelector('.VwiC3b, .s3v9rd, span[class]');
+                if (!a || !a.href || !a.href.startsWith('http')) continue;
+                results.push({
+                    url: a.href,
+                    title: h3 ? h3.innerText : a.innerText,
+                    snippet: snippet ? snippet.innerText : ''
+                });
+            }
+            return results;
+        """)
+        for item in (raw or []):
+            url = item.get("url", "")
+            if not url:
+                continue
+            domain = urlparse(url).netloc.lstrip("www.")
+            results.append(SerpResult(
+                position=position,
+                title=item.get("title", ""),
+                url=url,
+                domain=domain,
+                snippet=item.get("snippet", ""),
+            ))
+            position += 1
+    except Exception as e:
+        logger.warning("JS Google SERP parse failed: %s", e)
 
+    # Element refs for clickable results
+    try:
+        elements = sb.find_elements("div.g h3 a, div.tF2Cxc h3 a")
         for i, el in enumerate(elements):
             if i < len(results):
                 results[i].element_ref = el
+    except Exception:
+        pass
+
+    logger.info("Google SERP: parsed %d results (starting pos %d)", len(results), start_offset)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# SERP parsing — Bing
+# ---------------------------------------------------------------------------
+
+def _parse_bing_serp(sb, start_offset: int = 1) -> list[SerpResult]:
+    results = []
+    position = start_offset
+
+    try:
+        raw = sb.execute_script("""
+            const results = [];
+            const containers = document.querySelectorAll('li.b_algo');
+            for (const c of containers) {
+                const a = c.querySelector('h2 a');
+                const snippet = c.querySelector('.b_caption p, p');
+                if (!a || !a.href || !a.href.startsWith('http')) continue;
+                results.push({
+                    url: a.href,
+                    title: a.innerText,
+                    snippet: snippet ? snippet.innerText : ''
+                });
+            }
+            return results;
+        """)
+        for item in (raw or []):
+            url = item.get("url", "")
+            if not url:
+                continue
+            domain = urlparse(url).netloc.lstrip("www.")
+            results.append(SerpResult(
+                position=position,
+                title=item.get("title", ""),
+                url=url,
+                domain=domain,
+                snippet=item.get("snippet", ""),
+            ))
+            position += 1
     except Exception as e:
-        logger.warning("Error attaching element handles: %s", e)
+        logger.warning("JS Bing SERP parse failed: %s", e)
+
+    try:
+        elements = sb.find_elements("li.b_algo h2 a")
+        for i, el in enumerate(elements):
+            if i < len(results):
+                results[i].element_ref = el
+    except Exception:
+        pass
+
+    logger.info("Bing SERP: parsed %d results (starting pos %d)", len(results), start_offset)
+    return results
 
 
-async def _go_to_page_2(page, engine: str) -> bool:
-    """Navigate to page 2 of the SERP."""
+def _navigate_next_page(sb, engine: str, next_page: int) -> bool:
+    """Navigate to the next page of search results."""
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
     try:
         if engine == "google":
-            next_btn = await page.query_selector("a#pnnext, td a.fl[href*='start=10']")
-            if next_btn:
-                await human_click_element(page, next_btn)
-                await page.wait_for_load_state("domcontentloaded", timeout=20000)
-                await asyncio.sleep(1.5)
+            for sel in ['a#pnnext', 'a[aria-label="Next page"]', f'a[aria-label="Page {next_page}"]', 'button[jsname="jT2kWb"]']:
+                try:
+                    if sb.is_element_visible(sel):
+                        el = sb.find_element(sel)
+                        human_click_element(sb, el)
+                        sb.wait_for_ready_state_complete(timeout=15)
+                        time.sleep(random.uniform(2, 4))
+                        return True
+                except Exception:
+                    pass
+            current_url = sb.get_current_url()
+            if "google.com/search" in current_url:
+                parsed = urlparse(current_url)
+                qs = parse_qs(parsed.query)
+                qs["start"] = [str((next_page - 1) * 10)]
+                next_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
+                logger.info("Navigating to Google page %d via URL: %s", next_page, next_url)
+                sb.open(next_url)
+                sb.wait_for_ready_state_complete(timeout=15)
+                time.sleep(random.uniform(2, 4))
                 return True
         else:
-            # Bing: build page 2 URL directly from current URL to avoid
-            # accidentally clicking redirect/suggest links instead of Next button.
-            current_url = page.url
+            for sel in ['a.sb_pagN', 'a[title="Next page"]', f'li.b_pag a[aria-label="Page {next_page}"]']:
+                try:
+                    if sb.is_element_visible(sel):
+                        el = sb.find_element(sel)
+                        human_click_element(sb, el)
+                        sb.wait_for_ready_state_complete(timeout=15)
+                        time.sleep(random.uniform(2, 4))
+                        return True
+                except Exception:
+                    pass
+            current_url = sb.get_current_url()
             if "bing.com/search" in current_url:
-                # Remove any existing pagination params and add first=11
-                import urllib.parse
-                parsed = urllib.parse.urlparse(current_url)
-                params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-                # Remove redirect params that cause empty results
-                for k in ["rdr", "rdrig", "first", "search", "form"]:
-                    params.pop(k, None)
-                params["first"] = ["11"]
-                params["FORM"] = ["PERE"]
-                new_query = urllib.parse.urlencode(
-                    {k: v[0] for k, v in params.items()}
-                )
-                page2_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
-                await page.goto(page2_url, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(2.0)
-                return True
-            # Fallback: try clicking Next button
-            next_btn = await page.query_selector(
-                "a.sb_pagN, a[title='Next page'], a[aria-label='Next page']"
-            )
-            if next_btn:
-                await human_click_element(page, next_btn)
-                await page.wait_for_load_state("domcontentloaded", timeout=20000)
-                await asyncio.sleep(1.5)
+                parsed = urlparse(current_url)
+                qs = parse_qs(parsed.query)
+                qs["first"] = [str((next_page - 1) * 10 + 1)]
+                next_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
+                logger.info("Navigating to Bing page %d via URL: %s", next_page, next_url)
+                sb.open(next_url)
+                sb.wait_for_ready_state_complete(timeout=15)
+                time.sleep(random.uniform(2, 4))
                 return True
     except Exception as e:
-        logger.warning("Error navigating to page 2: %s", e)
+        logger.warning("_navigate_next_page error: %s", e)
     return False
 
 
 # ---------------------------------------------------------------------------
-# SERP click variation strategies
+# Find target (with multi-page pagination support)
 # ---------------------------------------------------------------------------
 
-async def click_target_with_variation(
-    page,
-    target_result: SerpResult,
-    engine: str = "google",
-    competitor_click_chance: float = 0.0,
-) -> None:
+def find_target_in_serp(sb, target_domain: str, engine: str = "google", max_pages: int = 3) -> SerpSearchOutcome:
+    all_results = []
+
+    for page in range(1, max_pages + 1):
+        offset = (page - 1) * 10 + 1
+        page_results = _parse_google_serp(sb, start_offset=offset) if engine == "google" else _parse_bing_serp(sb, start_offset=offset)
+        all_results.extend(page_results)
+
+        for r in page_results:
+            if target_domain in r.domain or target_domain in r.url:
+                logger.info("Target '%s' found on Page %d (position %d)", target_domain, page, r.position)
+                return SerpSearchOutcome(
+                    found=True,
+                    position=r.position,
+                    target_element_ref=r.element_ref,
+                    total_results=len(all_results),
+                    results=all_results,
+                )
+
+        if page < max_pages:
+            logger.info("Target '%s' not found on Page %d — navigating to Page %d", target_domain, page, page + 1)
+            navigated = _navigate_next_page(sb, engine, page + 1)
+            if not navigated:
+                logger.info("No next page button or navigation failed for Page %d", page + 1)
+                break
+            random_pause(2, 4)
+            human_scroll(sb, random.randint(200, 500))
+            random_pause(1, 3)
+
+    logger.info("Target '%s' not found in %d parsed results (up to page %d)", target_domain, len(all_results), max_pages)
+    return SerpSearchOutcome(found=False, total_results=len(all_results), results=all_results)
+
+
+# ---------------------------------------------------------------------------
+# Click variation strategies & Pogo-Sticking Engine
+# ---------------------------------------------------------------------------
+
+def click_target_with_variation(sb, target_result: SerpResult, engine: str = "google",
+                                 competitor_click_chance: float = 0.20) -> None:
     """
-    Click the target result with position-variation strategy.
-
-    Strategies (configurable via competitor_click_chance):
-      If competitor_click_chance > 0:
-        (1-competitor_click_chance)/2 chance: Direct click (read snippet first)
-        (1-competitor_click_chance)/2 chance: Scroll past target, read, scroll back, click
-        competitor_click_chance: Click competitor first, dwell, back, click target
-      If competitor_click_chance == 0:
-        60% direct click, 40% scroll past + back (no competitor click — saves bandwidth)
+    Simulate natural human click variation on search engine result pages.
+    Strategies:
+      - Direct click (50%)
+      - Scroll past target then back up (25%)
+      - Pogo-sticking on competitor (25%): clicks competitor, bounces back to SERP, then clicks target.
     """
-    if not target_result.element_ref:
-        logger.warning("No element ref for target result — falling back to direct click")
-        await random_pause(3, 8)
-        await human_click_element(page, target_result.element_ref)
-        return
+    r = random.random()
 
-    strategy = random.random()
-
-    if competitor_click_chance > 0:
-        # 3-way split: direct / scroll_past / competitor
-        direct_thresh = (1 - competitor_click_chance) * 0.5
-        scroll_thresh = (1 - competitor_click_chance)
+    if competitor_click_chance > 0 and r < competitor_click_chance:
+        logger.info("Triggering Pogo-Sticking SEO boost strategy (competitor bounce -> target dwell)")
+        _pogo_sticking_flow(sb, target_result, engine)
+    elif r < 0.70:
+        _click_direct(sb, target_result)
     else:
-        # 2-way split: 60% direct, 40% scroll past (no competitor — save bandwidth)
-        direct_thresh = 0.6
-        scroll_thresh = 1.0
+        _click_scroll_past(sb, target_result)
 
-    if strategy < direct_thresh:
-        # --- Strategy 1: Direct click ---
-        logger.info("Strategy: direct click with read delay")
-        await random_pause(3, 8)
-        await human_click_element(page, target_result.element_ref)
 
-    elif strategy < scroll_thresh:
-        # --- Strategy 2: Scroll past target, read, scroll back, click ---
-        logger.info("Strategy: scroll past target then back")
-        await human_scroll(page, random.randint(400, 800))
-        await random_pause(5, 10)
-        await page.evaluate("() => window.scrollTo(0, 0)")
-        await random_pause(1, 3)
-        await human_click_element(page, target_result.element_ref)
+def _click_direct(sb, result: SerpResult) -> None:
+    logger.info("Click strategy: direct target click")
+    if result.element_ref:
+        try:
+            human_click_element(sb, result.element_ref)
+            return
+        except Exception:
+            pass
+    try:
+        sb.open(result.url)
+    except Exception as e:
+        logger.warning("Direct URL open fallback failed: %s", e)
 
-    else:
-        # --- Strategy 3: Click competitor first, back to SERP, click target ---
-        logger.info("Strategy: competitor first then back")
-        # Find a competitor result above the target
-        competitor = None
-        # Query all result links and find one above the target
-        if engine == "google":
-            all_links = await page.query_selector_all("div.g h3 a, div.g a[href]")
-        else:
-            all_links = await page.query_selector_all("li.b_algo h2 a")
 
-        target_box = await target_result.element_ref.bounding_box() if target_result.element_ref else None
+def _click_scroll_past(sb, result: SerpResult) -> None:
+    logger.info("Click strategy: scroll past target then scroll back")
+    human_scroll(sb, random.randint(300, 600))
+    random_pause(1.0, 2.5)
+    human_scroll(sb, -random.randint(200, 450))
+    random_pause(0.8, 1.8)
+    _click_direct(sb, result)
 
-        for link in all_links:
+
+def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
+    """
+    Simulate Pogo-Sticking (Bounce on competitor -> Satisfied dwell on target):
+    1. Click top competitor link.
+    2. Skim competitor page for 4-8 seconds (dissatisfaction).
+    3. Click browser Back to return to SERP.
+    4. Pause on SERP (2-3s).
+    5. Click target result and stay.
+    """
+    logger.info("Pogo-sticking: searching for competitor result...")
+    competitor_clicked = False
+
+    try:
+        sel = "div.g h3 a, div.tF2Cxc h3 a" if engine == "google" else "li.b_algo h2 a"
+        links = sb.find_elements(sel)
+
+        for link in links:
             try:
-                box = await link.bounding_box()
-                if box and target_box and box["y"] < target_box["y"]:
-                    # This is above the target — good competitor
-                    competitor = link
+                href = link.get_attribute("href") or ""
+                if href.startswith("http") and result.url not in href and "google.com" not in href and "bing.com" not in href:
+                    logger.info("Pogo-sticking: clicking competitor (%s)", href[:60])
+                    human_click_element(sb, link)
+                    sb.wait_for_ready_state_complete(timeout=10)
+
+                    # Skim competitor for 4-7s then bounce back
+                    random_pause(2.0, 4.0)
+                    human_scroll(sb, random.randint(150, 350))
+                    random_pause(2.0, 4.0)
+
+                    logger.info("Pogo-sticking: bouncing back to SERP...")
+                    sb.go_back()
+                    sb.wait_for_ready_state_complete(timeout=10)
+                    random_pause(1.5, 3.0)
+                    competitor_clicked = True
                     break
-            except Exception:
+            except Exception as ex:
+                logger.debug("Competitor click element error: %s", ex)
                 continue
+    except Exception as e:
+        logger.warning("Pogo-sticking flow error: %s", e)
 
-        if competitor:
-            await human_click_element(page, competitor)
-            await page.wait_for_load_state("domcontentloaded", timeout=20000)
-            await random_pause(10, 20)  # dwell on competitor page
-            # Go back to SERP
-            await page.go_back()
-            await page.wait_for_load_state("domcontentloaded", timeout=20000)
-            await random_pause(1, 3)
-            # Now click target
-            await human_click_element(page, target_result.element_ref)
-        else:
-            # No competitor found — fallback to direct click
-            await random_pause(3, 8)
-            await human_click_element(page, target_result.element_ref)
-
-    # Wait for the target page to load after clicking
-    try:
-        await page.wait_for_load_state("domcontentloaded", timeout=20000)
-    except Exception:
-        logger.warning("Target page load timeout after SERP click — continuing")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _extract_domain(url: str) -> str:
-    """Extract the registered domain from a URL."""
-    try:
-        parsed = urlparse(url)
-        host = parsed.netloc or parsed.hostname or ""
-        # Strip port if present
-        if ":" in host:
-            host = host.split(":")[0]
-        return host
-    except Exception:
-        return ""
+    # Now click our target domain
+    if competitor_clicked:
+        logger.info("Pogo-sticking: now proceeding to click target domain with full satisfaction dwell")
+    _click_direct(sb, result)

@@ -24,6 +24,12 @@ type Pool struct {
 	// blacklisted is the set of permanently removed proxies.
 	blacklisted map[int64]string // proxyID -> reason
 
+	// quarantined holds temporary bans with an expiry timestamp.
+	quarantined map[int64]time.Time // proxyID -> until
+
+	// consecutiveErrors tracks failure count before auto-quarantine/blacklist.
+	consecutiveErrors map[int64]int // proxyID -> count
+
 	// allKnown keeps every proxy the pool has ever held for analytics.
 	allKnown []PooledProxy
 
@@ -52,7 +58,9 @@ type PooledProxy struct {
 // NewPool creates an empty proxy pool.
 func NewPool() *Pool {
 	return &Pool{
-		blacklisted: make(map[int64]string),
+		blacklisted:       make(map[int64]string),
+		quarantined:       make(map[int64]time.Time),
+		consecutiveErrors: make(map[int64]int),
 	}
 }
 
@@ -103,8 +111,8 @@ func (p *Pool) Load(proxies []PooledProxy) {
 // Acquire returns the next available proxy for this cycle. STRICT rotation:
 // each proxy is returned at most once per cycle. If no proxies are available,
 // returns false — the caller must wait for a pool refresh.
-// Proxies whose API key has hit the bandwidth pause threshold are skipped
-// and pushed to the back of the queue (not removed — they recover next month).
+// Proxies whose API key has hit the bandwidth pause threshold or are currently
+// under quarantine are skipped and rotated.
 func (p *Pool) Acquire() (PooledProxy, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -113,9 +121,24 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 		return PooledProxy{}, false
 	}
 
-	// Scan for the first proxy whose API key still has bandwidth.
+	now := time.Now()
+
+	// Scan for the first proxy whose API key still has bandwidth and is not quarantined.
 	for i := 0; i < len(p.available); i++ {
 		px := p.available[i]
+
+		// Check quarantine
+		if until, q := p.quarantined[px.ID]; q {
+			if now.Before(until) {
+				// Still in quarantine — rotate to back
+				p.available = append(p.available[:i], p.available[i+1:]...)
+				p.available = append(p.available, px)
+				i--
+				continue
+			}
+			// Quarantine expired — remove
+			delete(p.quarantined, px.ID)
+		}
 
 		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
 			// Key exhausted — rotate this proxy to the back and keep scanning.
@@ -132,6 +155,49 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 	}
 
 	return PooledProxy{}, false
+}
+
+// Quarantine temporarily isolates a proxy for a specified duration.
+func (p *Pool) Quarantine(px PooledProxy, duration time.Duration, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.quarantined[px.ID] = time.Now().Add(duration)
+	fmt.Printf("[proxy-pool] quarantined %s:%d for %v — %s\n", px.IP, px.Port, duration, reason)
+}
+
+// RecordSuccess marks a proxy as successfully executed and resets its error score.
+func (p *Pool) RecordSuccess(px PooledProxy) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consecutiveErrors[px.ID] = 0
+}
+
+// RecordFailure records a failure for the proxy and applies auto-quarantine or blacklist.
+func (p *Pool) RecordFailure(px PooledProxy, isCaptcha bool, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.consecutiveErrors[px.ID]++
+	errCount := p.consecutiveErrors[px.ID]
+
+	if isCaptcha {
+		if errCount >= 2 {
+			// 2nd CAPTCHA in a row — blacklist permanently
+			p.blacklisted[px.ID] = "Repeated CAPTCHA: " + reason
+			fmt.Printf("[proxy-pool] blacklisted %s:%d (consecutive CAPTCHAs: %d)\n", px.IP, px.Port, errCount)
+		} else {
+			// 1st CAPTCHA — quarantine for 4 hours
+			p.quarantined[px.ID] = time.Now().Add(4 * time.Hour)
+			fmt.Printf("[proxy-pool] auto-quarantined %s:%d for 4h after CAPTCHA\n", px.IP, px.Port)
+		}
+		return
+	}
+
+	// Non-captcha errors (timeouts, network drops)
+	if errCount >= 3 {
+		p.quarantined[px.ID] = time.Now().Add(2 * time.Hour)
+		fmt.Printf("[proxy-pool] auto-quarantined %s:%d for 2h after %d network failures\n", px.IP, px.Port, errCount)
+	}
 }
 
 // Release returns a proxy back to the available pool (e.g. task failed with
@@ -203,6 +269,14 @@ func (p *Pool) DailyReset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Clear expired quarantines
+	now := time.Now()
+	for id, until := range p.quarantined {
+		if now.After(until) {
+			delete(p.quarantined, id)
+		}
+	}
+
 	recovered := 0
 	for _, px := range p.usedThisCycle {
 		if _, banned := p.blacklisted[px.ID]; !banned {
@@ -211,8 +285,8 @@ func (p *Pool) DailyReset() {
 		}
 	}
 	p.usedThisCycle = nil
-	fmt.Printf("[proxy-pool] daily reset: recovered %d proxies (blacklisted: %d)\n",
-		recovered, len(p.blacklisted))
+	fmt.Printf("[proxy-pool] daily reset: recovered %d proxies (blacklisted: %d, quarantined: %d)\n",
+		recovered, len(p.blacklisted), len(p.quarantined))
 }
 
 // AllKnown returns a snapshot of every proxy the pool currently knows about.

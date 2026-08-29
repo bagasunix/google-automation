@@ -74,7 +74,7 @@ USER_AGENTS = [
     "(KHTML, like Gecko) Version/16.6 Safari/605.1.15",
 ]
 
-# Viewports that pair naturally with the UA platforms above
+# Desktop Viewports
 VIEWPORTS = [
     {"width": 1920, "height": 1080},
     {"width": 1536, "height": 864},
@@ -82,6 +82,26 @@ VIEWPORTS = [
     {"width": 1366, "height": 768},
     {"width": 1280, "height": 720},
     {"width": 1680, "height": 1050},
+]
+
+# Mobile User-Agents (Android & iOS)
+MOBILE_USER_AGENTS = [
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-A536B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1",
+]
+
+# Mobile Viewports
+MOBILE_VIEWPORTS = [
+    {"width": 393, "height": 852},   # iPhone 15 / 16
+    {"width": 412, "height": 915},   # Pixel 8 / Galaxy S24
+    {"width": 390, "height": 844},   # iPhone 13 / 14
+    {"width": 360, "height": 800},   # Galaxy A series
+    {"width": 430, "height": 932},   # iPhone 15 Pro Max
 ]
 
 # Timezone candidates (pick one that loosely matches proxy geo or random)
@@ -281,71 +301,43 @@ class StealthProfile:
     hardware_concurrency: int = 8
     device_pixel_ratio: float = 1.0
     platform: str = "Win32"
+    is_mobile: bool = False
+    max_touch_points: int = 0
 
     @classmethod
-    def random(cls) -> "StealthProfile":
+    def random(cls, is_mobile: bool | None = None) -> "StealthProfile":
         """Generate a fully random profile (no proxy geo — fallback)."""
-        tz = random.choice(TIMEZONES)
-        loc = random.choice(LOCALES)
-        ua = _pick_ua_for_locale(loc)
-
-        vp = random.choice(VIEWPORTS)
-        webgl = random.choice(WEBGL_CONFIGS)
-        color_depth = random.choice(COLOR_DEPTHS)
-        hw_conc = random.choice(HARDWARE_CONCURRENCIES)
-        dpr = random.choice(DEVICE_PIXEL_RATIOS)
-
-        if "Windows" in ua:
-            platform = "Win32"
-        elif "Macintosh" in ua:
-            platform = "MacIntel"
-        else:
-            platform = "Linux x86_64"
-
-        return cls(
-            user_agent=ua,
-            viewport=vp,
-            timezone=tz,
-            locale=loc,
-            webgl_vendor=webgl["vendor"],
-            webgl_renderer=webgl["renderer"],
-            color_depth=color_depth,
-            hardware_concurrency=hw_conc,
-            device_pixel_ratio=dpr,
-            platform=platform,
-        )
+        return cls.for_proxy(country="US", is_mobile=is_mobile)
 
     @classmethod
-    def for_proxy(cls, country: str = "", timezone: str = "") -> "StealthProfile":
+    def for_proxy(cls, country: str = "", timezone: str = "", is_mobile: bool | None = None) -> "StealthProfile":
         """
-        Generate a profile consistent with the proxy's geography.
-
-        - Timezone: use proxy_timezone if provided, else derive from country.
-        - Locale: match country (en-GB for GB, en-US for US, etc.).
-        - UA platform: match country (US/GB → Windows Chrome dominant;
-          DE/NL → more Linux; JP → more Mac).
-        - Everything else (viewport, WebGL, color_depth, hw_concurrency,
-          device_pixel_ratio) stays randomised.
+        Generate a profile consistent with the proxy's geography and device type.
         """
         tz = timezone or _COUNTRY_TIMEZONES.get(country.upper(), "") or random.choice(TIMEZONES)
         loc = _COUNTRY_LOCALES.get(country.upper(), "en-US")
 
-        # Pick a UA consistent with the locale's platform.
-        ua = _pick_ua_for_locale(loc)
+        if is_mobile is None:
+            # 40% chance of mobile simulation
+            is_mobile = random.random() < 0.40
 
-        vp = random.choice(VIEWPORTS)
+        if is_mobile:
+            ua = random.choice(MOBILE_USER_AGENTS)
+            vp = random.choice(MOBILE_VIEWPORTS)
+            platform = "Linux armv8l" if "Android" in ua else "iPhone"
+            max_touch = 5
+            dpr = random.choice([2.0, 3.0])
+            hw_conc = random.choice([6, 8])
+        else:
+            ua = _pick_ua_for_locale(loc)
+            vp = random.choice(VIEWPORTS)
+            platform = "Win32" if "Windows" in ua else ("MacIntel" if "Macintosh" in ua else "Linux x86_64")
+            max_touch = 0
+            dpr = random.choice(DEVICE_PIXEL_RATIOS)
+            hw_conc = random.choice(HARDWARE_CONCURRENCIES)
+
         webgl = random.choice(WEBGL_CONFIGS)
         color_depth = random.choice(COLOR_DEPTHS)
-        hw_conc = random.choice(HARDWARE_CONCURRENCIES)
-        dpr = random.choice(DEVICE_PIXEL_RATIOS)
-
-        # Infer platform from UA.
-        if "Windows" in ua:
-            platform = "Win32"
-        elif "Macintosh" in ua:
-            platform = "MacIntel"
-        else:
-            platform = "Linux x86_64"
 
         return cls(
             user_agent=ua,
@@ -358,6 +350,8 @@ class StealthProfile:
             hardware_concurrency=hw_conc,
             device_pixel_ratio=dpr,
             platform=platform,
+            is_mobile=is_mobile,
+            max_touch_points=max_touch,
         )
 
 
@@ -391,8 +385,14 @@ def build_stealth_script(profile: StealthProfile) -> str:
 // === STEALTH INIT SCRIPT ===
 // Generated for profile: UA={profile.user_agent[:40]}...
 
+const navProto = (typeof navigator !== 'undefined' && Object.getPrototypeOf(navigator)) || (typeof Navigator !== 'undefined' && Navigator.prototype) || {{}};
+
 // 1. navigator.webdriver = false
 try {{
+    Object.defineProperty(navProto, 'webdriver', {{
+        get: () => false,
+        configurable: true,
+    }});
     Object.defineProperty(navigator, 'webdriver', {{
         get: () => false,
         configurable: true,
@@ -401,6 +401,10 @@ try {{
 
 // 2. navigator.platform
 try {{
+    Object.defineProperty(navProto, 'platform', {{
+        get: () => '{profile.platform}',
+        configurable: true,
+    }});
     Object.defineProperty(navigator, 'platform', {{
         get: () => '{profile.platform}',
         configurable: true,
@@ -409,6 +413,10 @@ try {{
 
 // 3. navigator.hardwareConcurrency
 try {{
+    Object.defineProperty(navProto, 'hardwareConcurrency', {{
+        get: () => {profile.hardware_concurrency},
+        configurable: true,
+    }});
     Object.defineProperty(navigator, 'hardwareConcurrency', {{
         get: () => {profile.hardware_concurrency},
         configurable: true,
@@ -417,8 +425,24 @@ try {{
 
 // 4. navigator.deviceMemory (common values: 4, 8)
 try {{
+    Object.defineProperty(navProto, 'deviceMemory', {{
+        get: () => 8,
+        configurable: true,
+    }});
     Object.defineProperty(navigator, 'deviceMemory', {{
         get: () => 8,
+        configurable: true,
+    }});
+}} catch (e) {{}}
+
+// 4b. navigator.maxTouchPoints (mobile support)
+try {{
+    Object.defineProperty(navProto, 'maxTouchPoints', {{
+        get: () => {profile.max_touch_points},
+        configurable: true,
+    }});
+    Object.defineProperty(navigator, 'maxTouchPoints', {{
+        get: () => {profile.max_touch_points},
         configurable: true,
     }});
 }} catch (e) {{}}
@@ -473,6 +497,10 @@ try {{
 
 // 6. navigator.languages
 try {{
+    Object.defineProperty(navProto, 'languages', {{
+        get: () => {langs_js},
+        configurable: true,
+    }});
     Object.defineProperty(navigator, 'languages', {{
         get: () => {langs_js},
         configurable: true,
@@ -517,6 +545,17 @@ try {{
     const webglVendor = '{profile.webgl_vendor}';
     const webglRenderer = '{profile.webgl_renderer}';
 
+    const origGetExtension = WebGLRenderingContext.prototype.getExtension;
+    WebGLRenderingContext.prototype.getExtension = function(name) {{
+        if (name === 'WEBGL_debug_renderer_info') {{
+            return {{
+                UNMASKED_VENDOR_WEBGL: 37445,
+                UNMASKED_RENDERER_WEBGL: 37446,
+            }};
+        }}
+        return origGetExtension.call(this, name);
+    }};
+
     const getParameterProto = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(param) {{
         // UNMASKED_VENDOR_WEBGL = 37445
@@ -528,6 +567,17 @@ try {{
 
     // Also patch WebGL2 if available
     if (typeof WebGL2RenderingContext !== 'undefined') {{
+        const origGetExtension2 = WebGL2RenderingContext.prototype.getExtension;
+        WebGL2RenderingContext.prototype.getExtension = function(name) {{
+            if (name === 'WEBGL_debug_renderer_info') {{
+                return {{
+                    UNMASKED_VENDOR_WEBGL: 37445,
+                    UNMASKED_RENDERER_WEBGL: 37446,
+                }};
+            }}
+            return origGetExtension2.call(this, name);
+        }};
+
         const getParameter2Proto = WebGL2RenderingContext.prototype.getParameter;
         WebGL2RenderingContext.prototype.getParameter = function(param) {{
             if (param === 37445) return webglVendor;
@@ -535,17 +585,73 @@ try {{
             return getParameter2Proto.call(this, param);
         }};
     }}
-}} catch (e) {{}}
 
-// 9. WebRTC block — prevents real IP leak through STUN/TURN
+    // Fallback getContext mock when headless environment has no hardware/swiftshader GPU
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type, ...args) {{
+        const ctx = origGetContext.apply(this, [type, ...args]);
+        if (!ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {{
+            return {{
+                canvas: this,
+                drawingBufferWidth: this.width || 300,
+                drawingBufferHeight: this.height || 150,
+                getParameter: function(param) {{
+                    if (param === 37445) return webglVendor;
+                    if (param === 37446) return webglRenderer;
+                    if (param === 7936) return 'WebKit';
+                    if (param === 7937) return 'WebKit WebGL';
+                    if (param === 7938) return 'WebGL 1.0 (OpenGL ES 2.0 Chromium)';
+                    return 0;
+                }},
+                getExtension: function(name) {{
+                    if (name === 'WEBGL_debug_renderer_info') {{
+                        return {{ UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 }};
+                    }}
+                    return null;
+                }},
+                getSupportedExtensions: () => ['WEBGL_debug_renderer_info', 'EXT_texture_filter_anisotropic'],
+                viewport: () => {{}},
+                clearColor: () => {{}},
+                clear: () => {{}},
+                enable: () => {{}},
+                disable: () => {{}},
+            }};
+        }}
+        return ctx;
+    }};
+}} catch (e) {{}}
+// 9. WebRTC IP leak protection & AudioContext anti-fingerprinting
 try {{
-    const origRTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-    window.RTCPeerConnection = undefined;
-    window.webkitRTCPeerConnection = undefined;
-    if (origRTCPeerConnection) {{
-        // Replace with a no-op proxy that still exists (some sites check typeof)
-        window.RTCPeerConnection = function() {{
-            throw new TypeError('RTCPeerConnection is not available');
+    if (window.RTCPeerConnection) {{
+        const origCreateOffer = RTCPeerConnection.prototype.createOffer;
+        RTCPeerConnection.prototype.createOffer = function(...args) {{
+            return origCreateOffer.apply(this, args).then(offer => {{
+                if (offer && offer.sdp) {{
+                    offer.sdp = offer.sdp.replace(/c=IN IP4 [0-9.]+/g, 'c=IN IP4 0.0.0.0');
+                }}
+                return offer;
+            }});
+        }};
+    }}
+
+    // AudioContext / AudioBuffer micro-noise injection
+    if (window.AudioBuffer) {{
+        const origGetChannelData = AudioBuffer.prototype.getChannelData;
+        AudioBuffer.prototype.getChannelData = function(channel) {{
+            const data = origGetChannelData.apply(this, arguments);
+            for (let i = 0; i < data.length; i += 100) {{
+                data[i] += 0.000001 * (Math.sin(i) - 0.5);
+            }}
+            return data;
+        }};
+    }}
+    if (window.AnalyserNode) {{
+        const origGetFloatFreq = AnalyserNode.prototype.getFloatFrequencyData;
+        AnalyserNode.prototype.getFloatFrequencyData = function(array) {{
+            origGetFloatFreq.apply(this, arguments);
+            for (let i = 0; i < array.length; i += 50) {{
+                array[i] += 0.0001 * Math.sin(i);
+            }}
         }};
     }}
 }} catch (e) {{}}
@@ -636,6 +742,52 @@ def json_array(items: list[str]) -> str:
     return json.dumps(items)
 
 
+def _build_client_hint_headers(profile: StealthProfile) -> dict:
+    """
+    Build Sec-CH-UA and Sec-Fetch-* headers consistent with the profile UA.
+    Only Chrome and Edge send these; Firefox/Safari skip them entirely.
+    """
+    import re
+
+    ua = profile.user_agent
+    if "Chrome/" not in ua and "Edg/" not in ua:
+        return {}
+
+    chrome_match = re.search(r"Chrome/(\d+)", ua)
+    if not chrome_match:
+        return {}
+
+    chrome_major = chrome_match.group(1)
+    edge_match = re.search(r"Edg/(\d+)", ua)
+
+    if edge_match:
+        edge_major = edge_match.group(1)
+        sec_ch_ua = (
+            f'"Microsoft Edge";v="{edge_major}", '
+            f'"Chromium";v="{chrome_major}", '
+            f'"Not_A Brand";v="24"'
+        )
+    else:
+        sec_ch_ua = (
+            f'"Google Chrome";v="{chrome_major}", '
+            f'"Chromium";v="{chrome_major}", '
+            f'"Not_A Brand";v="24"'
+        )
+
+    platform_map = {"Win32": '"Windows"', "MacIntel": '"macOS"'}
+    sec_ch_ua_platform = platform_map.get(profile.platform, '"Linux"')
+
+    return {
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": sec_ch_ua_platform,
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+    }
+
+
 async def apply_stealth(context, profile: StealthProfile | None = None) -> StealthProfile:
     """
     Apply stealth configuration to a Playwright BrowserContext (async).
@@ -666,11 +818,84 @@ async def apply_stealth(context, profile: StealthProfile | None = None) -> Steal
         profile.platform,
     )
 
-    await context.set_extra_http_headers({
-        "Accept-Language": f"{profile.locale},en;q=0.9",
-    })
+    headers = {"Accept-Language": f"{profile.locale},en;q=0.9"}
+    headers.update(_build_client_hint_headers(profile))
+    await context.set_extra_http_headers(headers)
 
     script = build_stealth_script(profile)
     await context.add_init_script(script)
 
     return profile
+
+
+def apply_stealth_to_sb(sb, profile: StealthProfile | None = None) -> StealthProfile:
+    """
+    Apply CDP stealth init script and network headers to a SeleniumBase session.
+
+    Registers Page.addScriptToEvaluateOnNewDocument so all navigations, new tabs,
+    and sub-pages automatically execute the stealth fingerprint patches.
+    """
+    if profile is None:
+        profile = StealthProfile.random()
+
+    logger.info(
+        "Applying SB CDP stealth profile: UA=%s, viewport=%s, tz=%s, locale=%s, "
+        "webgl=%s/%s, platform=%s",
+        profile.user_agent[:50],
+        profile.viewport,
+        profile.timezone,
+        profile.locale,
+        profile.webgl_vendor,
+        profile.webgl_renderer[:40],
+        profile.platform,
+    )
+
+    script = build_stealth_script(profile)
+    try:
+        driver = getattr(sb, "driver", sb)
+        if hasattr(driver, "execute_cdp_cmd"):
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": script}
+            )
+            try:
+                extra_headers = {"Accept-Language": f"{profile.locale},en;q=0.9"}
+                driver.execute_cdp_cmd(
+                    "Network.setExtraHTTPHeaders",
+                    {"headers": extra_headers}
+                )
+            except Exception:
+                pass
+
+            if profile.is_mobile:
+                try:
+                    driver.execute_cdp_cmd(
+                        "Emulation.setTouchEmulationEnabled",
+                        {"enabled": True, "maxTouchPoints": profile.max_touch_points}
+                    )
+                    driver.execute_cdp_cmd(
+                        "Emulation.setDeviceMetricsOverride",
+                        {
+                            "width": profile.viewport.get("width", 390),
+                            "height": profile.viewport.get("height", 844),
+                            "deviceScaleFactor": profile.device_pixel_ratio,
+                            "mobile": True,
+                        }
+                    )
+                except Exception as e:
+                    logger.debug("Mobile CDP emulation setup note: %s", e)
+
+            logger.info("CDP Page.addScriptToEvaluateOnNewDocument stealth script successfully registered (mobile=%s)", profile.is_mobile)
+        elif hasattr(sb, "execute_cdp_cmd"):
+            sb.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": script}
+            )
+            logger.info("CDP stealth script registered via sb.execute_cdp_cmd")
+        else:
+            logger.warning("No execute_cdp_cmd available on sb/driver")
+    except Exception as e:
+        logger.warning("apply_stealth_to_sb error: %s", e)
+
+    return profile
+

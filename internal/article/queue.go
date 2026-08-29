@@ -28,6 +28,12 @@ const (
 	MethodKeywordTitle
 	// MethodKeywordMeta searches by a keyword extracted from the meta description.
 	MethodKeywordMeta
+	// MethodLongTailHowTo prefixes title with natural 'cara' / 'how to'.
+	MethodLongTailHowTo
+	// MethodLongTailTutorial appends 'tutorial' / 'panduan'.
+	MethodLongTailTutorial
+	// MethodLongTailBranded appends brand / domain name to the search.
+	MethodLongTailBranded
 )
 
 func (m SearchMethod) String() string {
@@ -44,6 +50,12 @@ func (m SearchMethod) String() string {
 		return "keyword_title"
 	case MethodKeywordMeta:
 		return "keyword_meta"
+	case MethodLongTailHowTo:
+		return "long_tail_howto"
+	case MethodLongTailTutorial:
+		return "long_tail_tutorial"
+	case MethodLongTailBranded:
+		return "long_tail_branded"
 	default:
 		return "unknown"
 	}
@@ -169,8 +181,10 @@ func (q *Queue) LoadFromDB() error {
 	return q.reload()
 }
 
-// PickRandom selects a random eligible article and assigns a random search method.
-// Eligibility: searched_count < regularMax, OR (created within 7 days AND < newArticleBoost).
+// PickRandom selects an eligible article using the Smart Keyword Priority Matrix:
+// - Page 2 & 3 articles (position 11-30) get 3x higher weight (page 1 breakthrough boost).
+// - Unranked/new articles (position 0) get 2x weight (discovery).
+// - Page 1 articles (position 1-10) get 1x weight (maintenance).
 func (q *Queue) PickRandom(cfg *config.SchedulerConfig) (*SelectedArticle, bool) {
 	if len(q.articles) == 0 {
 		return nil, false
@@ -188,11 +202,45 @@ func (q *Queue) PickRandom(cfg *config.SchedulerConfig) (*SelectedArticle, bool)
 		return nil, false
 	}
 
-	// Random article selection.
-	article := eligible[rand.Intn(len(eligible))]
+	// Smart Priority Weighting
+	type weightedItem struct {
+		art    storage.Article
+		weight int
+	}
+	var weighted []weightedItem
+	totalWeight := 0
+
+	for _, a := range eligible {
+		w := 10 // baseline
+		pos := 0
+		if a.SerpPosition.Valid {
+			pos = int(a.SerpPosition.Int64)
+		}
+
+		if pos >= 11 && pos <= 30 {
+			w = 30 // 3x priority for Page 2 / Page 3 breakthrough
+		} else if pos == 0 {
+			w = 20 // 2x priority for unranked discovery
+		} else if pos >= 1 && pos <= 10 {
+			w = 10 // 1x maintenance
+		}
+		weighted = append(weighted, weightedItem{art: a, weight: w})
+		totalWeight += w
+	}
+
+	roll := rand.Intn(totalWeight)
+	accum := 0
+	article := eligible[0]
+	for _, item := range weighted {
+		accum += item.weight
+		if roll < accum {
+			article = item.art
+			break
+		}
+	}
 
 	// Random search method selection (prevents repetitive search patterns).
-	method := SearchMethod(rand.Intn(int(MethodKeywordMeta) + 1))
+	method := SearchMethod(rand.Intn(int(MethodLongTailBranded) + 1))
 	query := q.buildQuery(article, method)
 
 	return &SelectedArticle{
@@ -216,24 +264,44 @@ func (q *Queue) isEligible(a storage.Article, cfg *config.SchedulerConfig) bool 
 	return a.SearchedCount < cfg.RegularMax
 }
 
+// cleanTitle removes common site name suffixes and trailing punctuation from title.
+func cleanTitle(title string) string {
+	t := title
+	if idx := strings.Index(t, " - "); idx != -1 {
+		t = t[:idx]
+	}
+	if idx := strings.Index(t, " | "); idx != -1 {
+		t = t[:idx]
+	}
+	if idx := strings.Index(t, " – "); idx != -1 {
+		t = t[:idx]
+	}
+	return strings.TrimSpace(t)
+}
+
 // buildQuery constructs the search query string based on the chosen method.
 func (q *Queue) buildQuery(a storage.Article, method SearchMethod) string {
+	cTitle := cleanTitle(a.Title)
+	if cTitle == "" {
+		cTitle = a.Title
+	}
+
 	switch method {
 	case MethodExactTitle:
 		return a.Title
 
 	case MethodMetaDesc:
 		if a.MetaDesc == "" {
-			return a.Title
+			return cTitle
 		}
 		return a.MetaDesc
 
 	case MethodPartialTitle:
-		words := strings.Fields(a.Title)
-		if len(words) <= 3 {
-			return a.Title
+		words := strings.Fields(cTitle)
+		if len(words) <= 4 {
+			return cTitle
 		}
-		return strings.Join(words[:3], " ")
+		return strings.Join(words[:4], " ")
 
 	case MethodTitlePlusMeta:
 		words := strings.Fields(a.MetaDesc)
@@ -244,40 +312,58 @@ func (q *Queue) buildQuery(a storage.Article, method SearchMethod) string {
 			partial = strings.Join(words, " ")
 		}
 		if partial == "" {
-			return a.Title
+			return cTitle
 		}
-		return a.Title + " " + partial
+		return cTitle + " " + partial
 
 	case MethodKeywordTitle:
-		// Extract the first significant word from the title.
-		words := strings.Fields(a.Title)
+		words := strings.Fields(cTitle)
 		for _, w := range words {
-			if len(w) > 3 {
+			if len(w) > 4 {
 				return w
 			}
 		}
 		if len(words) > 0 {
 			return words[0]
 		}
-		return a.Title
+		return cTitle
 
 	case MethodKeywordMeta:
-		// Extract the first significant word from the meta description.
 		words := strings.Fields(a.MetaDesc)
 		for _, w := range words {
-			if len(w) > 3 {
+			if len(w) > 4 {
 				return w
 			}
 		}
-		// Fallback to title keyword if meta is empty.
-		titleWords := strings.Fields(a.Title)
+		titleWords := strings.Fields(cTitle)
 		if len(titleWords) > 0 {
 			return titleWords[0]
 		}
-		return a.Title
+		return cTitle
+
+	case MethodLongTailHowTo:
+		lower := strings.ToLower(cTitle)
+		if strings.HasPrefix(lower, "cara ") || strings.HasPrefix(lower, "how to ") {
+			return cTitle
+		}
+		return "cara " + cTitle
+
+	case MethodLongTailTutorial:
+		lower := strings.ToLower(cTitle)
+		if strings.Contains(lower, "tutorial") || strings.Contains(lower, "panduan") {
+			return cTitle
+		}
+		return cTitle + " tutorial"
+
+	case MethodLongTailBranded:
+		brand := strings.TrimPrefix(a.Domain, "www.")
+		if idx := strings.Index(brand, "."); idx != -1 {
+			brand = brand[:idx]
+		}
+		return cTitle + " " + brand
 
 	default:
-		return a.Title
+		return cTitle
 	}
 }
 

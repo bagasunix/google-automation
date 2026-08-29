@@ -1,142 +1,110 @@
-# PLAN — Search Automation bagasunix.com
+# PLAN & ROADMAP — Search Automation bagasunix.com
 
-Last updated: 2026-08-28
-
----
-
-## Status Pipeline
-
-| Komponen | Status |
-|---|---|
-| Go Orchestrator | ✅ Running |
-| Python Worker (gRPC :50051) | ✅ Running |
-| Webshare Proxy (key#0, 10 proxy) | ✅ Active |
-| Bing Search | ✅ Working |
-| Google Search | ⚠️ Datacenter IP selalu CAPTCHA — butuh residential proxy |
-| SERP Hit (bagasunix.com muncul) | ❌ Belum — artikel belum ranking |
+Last updated: 2026-08-29
 
 ---
 
-## Selesai ✅
+## Status Pipeline Saat Ini
 
-### Core Engine
-- [x] Go + Python hybrid (gRPC IPC)
-- [x] Webshare proxy API integration
-- [x] Schema UNIQUE INDEX `proxies(ip,port)` untuk ON CONFLICT upsert
-- [x] Parallel article extraction (20 goroutines, ~4s untuk 143 artikel)
-- [x] AcquireUsableProxy infinite loop fix
-- [x] `active_hours_start: 0` valid (tidak di-override ke 7)
-- [x] ResetCycle() auto-reset saat pool habis
-- [x] MaxSearchesToday = proxy_count × max_search_per_proxy
-
-### Engine Fallback & CAPTCHA Handling
-- [x] Per-engine CAPTCHA pause (`TriggerEnginePause`, `PickEngineAvailable`)
-- [x] Google kena CAPTCHA → hanya Google di-pause, Bing tetap jalan
-- [x] `CheckCaptchaRate()` per-engine (bukan global)
-- [x] `enginePausedUntil map[string]time.Time` di scheduler
-
-### Multi-key Webshare Rotation
-- [x] Config `webshare_api_keys` list (multi-key)
-- [x] `APIKeyIndex` di `Proxy` dan `PooledProxy` struct
-- [x] Pool sorted by APIKeyIndex — key#0 selalu duluan
-- [x] `NewScraperWithWebshareKeys`, `scrapeWebshareWithKey`
-- [x] Backward compat: `webshare_api_key` (single) masih bisa dipakai
-
-### Humanizer & Anti-Detection
-- [x] UA pool 18 agents (Chrome/Edge/Firefox/Safari, Win/Mac/Linux)
-- [x] `clear_cookies()` per session (fresh state tiap ganti proxy)
-- [x] `human_click_element`: `scroll_into_view_if_needed` sebelum klik (fix Y negatif)
-- [x] Consent banner dismiss pakai `human_click_element` (bukan `.click()`)
-- [x] `_browse_serp_casually`: klik result → baca 20-60s → go_back
-- [x] Internal clicks: 1-2 artikel, baca full `simulate_reading`
-- [x] `import random` di google.py dan bing.py
-
-### Bing Fixes
-- [x] Bing consent banner dismiss: homepage + post-SERP
-- [x] `parse_bing_serp`: `wait_for_selector("li.b_algo")` sebelum parse
-- [x] `networkidle` → `domcontentloaded` (timeout fix)
-- [x] Bing page 2: navigate via URL `first=11` (fix 0 results dari redirect URL)
-
-### Database & Infra
-- [x] SQLite WAL mode + `busy_timeout(5000)` (fix SQLITE_BUSY)
-- [x] `TodayTaskCountByEngine` + `TodayCaptchaCountByEngine` queries
-- [x] gRPC `worker_timeout: 600` (fix DeadlineExceeded pada long task)
-- [x] Debug screenshot on 0 Bing results + URL + title log
+| Komponen | Status | Catatan |
+|---|---|---|
+| Go Orchestrator | ✅ Running | Proxy rotation, sitemap scraper, gRPC client, SQLite WAL mode |
+| Python Worker (gRPC :50051) | ✅ Running | SeleniumBase UC (Undetected-ChromeDriver), stealth session, dwell reading |
+| Webshare Proxy (Multi-Key) | ✅ Active | Multi-key failover + bandwidth tracking (1GB limit) |
+| Bing Search | ✅ Working | Normal parsing, browsing & click engagement |
+| Google Search | ⚠️ Perlu optimasi | Datacenter IP sering kena /sorry/ — butuh CDP stealth injection & residential proxy |
+| CAPTCHA Solver | ✅ Integrated | Audio reCAPTCHA v2 (Groq Whisper-large-v3-turbo) + token solver fallback |
 
 ---
 
-## Pending / Next Steps 🔧
+## Roadmap Pengembangan Berurutan 📋
 
-### Priority Tinggi
-
-- [x] **reCAPTCHA Audio Solver** — auto-solve reCAPTCHA v2 via audio challenge.
-  Download audio via browser fetch (through proxy), transcribe with SpeechRecognition
-  (Google Web Speech API), convert number words to digits, type answer + verify.
-  Integrated at: google.py, bing.py, serp.py (page 1 + page 2 CAPTCHA).
-  Config: `captcha:` section in config.yaml (`enabled`, `max_attempts`, `solver`).
-  Deps: SpeechRecognition, pydub (installed in worker/.venv).
-
-### Priority Sedang
-
-- [ ] **Residential Proxy** — datacenter IP Webshare selalu kena Google sorry page.
-  Solusi: upgrade ke Webshare residential, atau coba provider lain (Oxylabs, Bright Data, Smartproxy).
-  Setelah itu Google 70% bisa aktif lagi.
-
-- [x] **Fix stealth.py RuntimeWarning** — `apply_stealth()` sekarang async:
-  `set_extra_http_headers()` dan `add_init_script()` dipanggil dengan `await`.
-  Caller di `session.py` sudah di-update ke `await apply_stealth(...)`.
-
-- [x] **Install playwright-stealth** — v2.0.3 ter-install di worker/.venv.
-  `session.py` pakai API v2: `Stealth().apply_stealth_async(context)`.
-  Warning "playwright-stealth not installed" tidak muncul lagi.
-
-- [x] **Graceful daily reset** — goroutine `dailyResetLoop()` di orchestrator
-  trigger setiap midnight (local time):
-  - `pool.DailyReset()`: recover used proxies (blacklist tetap permanen)
-  - `scheduler.DailyReset()`: clear semua engine CAPTCHA pauses
-  - `cooldown.DailyReset()`: reset consecutive failure counter
-  - `db.ResetDailyProxyUsage()`: reset used_count=0 untuk active proxies
-
-### Priority Sedang
-
-- [ ] **VPS Deployment** (43.156.122.137, user: bukalab) — SSH port 22 refused.
-  Perlu fix via Tencent Cloud VNC console. Setelah jalan, pindahkan worker ke VPS.
-
-- [ ] **SERP Position Tracking** — semua artikel masih `N/A` karena belum ranking.
-  Normal untuk situs baru. Monitor setelah 2-4 minggu.
-
-- [ ] **Multiple domain support** — config sudah support list domains,
-  tapi belum ditest dengan lebih dari 1 domain.
-
-### Priority Rendah
-
-- [x] **Analytics dashboard** — export stats ke HTML/CSS untuk monitoring mingguan.
-  `cmd/dashboard/main.go` → `go run ./cmd/dashboard/` → `analytics/dashboard.html`.
-- [x] **Telegram notif** — kirim summary harian (tasks, success rate, SERP positions) via bot.
-  `internal/notify/telegram.go`, hook ke `performDailyReset()`. Config: `telegram:` di config.yaml.
-- [x] **Docker Compose** — tested dan running. Fix: hapus host port binding worker (konflikt dengan host process). `docker compose up -d` → kedua container healthy.
-- [x] **Rate limiter per domain** — `max_searches_per_domain_per_day` di config. 0 = unlimited. Check di orchestrator setelah spread check.
+### 🚀 Fase 1: Quick Wins, Anti-Deteksi Kritis & Keamanan
+- [x] **1.1. Injeksi Stealth Script via CDP**
+  - Hubungkan `build_stealth_script()` di `worker/browser/stealth.py` ke `worker/browser/session.py`.
+  - Menggunakan `execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", ...)` dengan prototype property patch dan WebGL fallback mock untuk server tanpa GPU/X11.
+- [x] **1.2. Sinkronisasi Cooldown Go vs Python**
+  - Menghilangkan redundansi double delay di `worker/main.py` dan memusatkan kontrol cooldown di Go orchestrator.
+- [x] **1.3. Keamanan Kredensial (.env Integration)**
+  - Mengintegrasikan loader `.env` di Go (`internal/config/config.go`) dan Python (`worker/main.py`).
+  - Menyediakan `.env.example` dan menambahkan aturan di `.gitignore`.
 
 ---
 
-## Config Aktif (2026-08-14)
+### 🎯 Fase 2: SERP Navigation & Realisme Pencarian
+- [x] **2.1. SERP Pagination (Halaman 2, 3 & Infinite Scroll)**
+  - Navigasi otomatis ke halaman 2 dan 3 jika target belum ditemukan di halaman 1 (Google: `&start=10`/`&start=20`, Bing: `&first=11`/`&first=21`).
+  - Posisi ranking diakumulasikan secara riil (posisi 1–30).
+- [x] **2.2. Long-Tail & Query Variation Generator**
+  - Menambahkan metode pencarian long-tail: `cara [keyword]`, `[keyword] tutorial`, `[keyword] [brand]`.
+  - Simulasi typo keyboard manusiawi dengan jeda per karakter dan koreksi backspace di `worker/browser/humanizer.py`.
+- [x] **2.3. Mobile Browser Emulation**
+  - Menambahkan User-Agent mobile (Android & iPhone), Viewports mobile, CDP touch emulation (`maxTouchPoints = 5`), dan device metrics override.
 
-```yaml
-engine_ratio: google: 70 / bing: 30
-max_search_per_proxy: 5
-captcha_pause_hours: 3
-worker_timeout: 600
-webshare_api_keys: [key#0]   # 10 proxy datacenter US
-active_hours: 0-24 (testing)
-cooldown: 5-15s (testing)
+---
+
+### 🛡️ Fase 3: Profile Persistence & Proxy Reliability
+- [x] **3.1. Warm Browser Profiles (Cookie & History Retention)**
+  - Pool direktori browser persistent (`data/profiles/profile_0` .. `profile_9`) untuk menyimpan cookies, session, dan cache browsing secara natural di `worker/browser/profiles.py` & `session.py`.
+- [x] **3.2. Proxy Health Scoring & Auto-Quarantine**
+  - Auto-quarantine proxy selama 4 jam jika memicu CAPTCHA, dan isolasi 2 jam jika mengalami 3x network error berturut-turut di `internal/proxy/pool.go`.
+
+---
+
+### 📊 Fase 4: Observabilitas & Interaktivitas
+- [x] **4.1. Live Interactive Web Dashboard**
+  - Mode live web server di `cmd/dashboard/main.go` (`./bin/dashboard --serve :8080`) dengan auto-refresh 30 detik dan endpoint JSON `/api/stats`.
+- [x] **4.2. Interactive Telegram Bot Commands**
+  - Telegram bot command listener aktif untuk `/status`, `/stats`, `/pause`, dan `/resume` di `internal/notify/telegram.go` & `internal/orchestrator/orchestrator.go`.
+
+---
+
+### 🔮 Fase 5: Advanced SEO Boost & VPS Resilience
+- [x] **5.1. Pogo-Sticking Engine & Competitor Bounce Rate Manipulator**
+  - Klik kompetitor di ranking 1–2, diam sebentar (4–8s), lalu klik Back (Bounce) kembali ke SERP.
+  - Lanjutkan dengan mengklik target `bagasunix.com` dengan dwell panjang (60–180s) untuk mengirimkan sinyal kepuasan pengguna (*satisfied user signal*) terkuat ke Google RankBrain.
+- [x] **5.2. Natural Traffic Source Mixer**
+  - Diversifikasi sumber traffic di scheduler (70% Google/Bing Organic, 15% Direct/Bookmark, 10% Social Referral via Twitter/Reddit/LinkedIn).
+  - Menjaga profil analytics website tetap natural dan bebas anomali.
+- [x] **5.3. Multi-Tab Browsing & Realistic Reading Heatmap**
+  - Membuka artikel terkait di tab baru (*Ctrl+Click*), berpindah antar tab secara bergantian, lalu menutup tab.
+  - Simulasi seleksi/highlight teks penting dan jeda lebih lama saat scroll melewati gambar/tabel.
+- [x] **5.4. Smart Keyword Priority Matrix**
+  - Bobot prioritas dinamis: artikel yang terdeteksi di halaman 2 atau 3 (posisi 11–30) otomatis mendapat bobot frekuensi pencarian 3x lebih tinggi untuk didorong (*breakthrough*) ke halaman 1.
+- [x] **5.5. VPS Systemd Service Suite & Auto-Heal Watchdog**
+  - File unit systemd (`google-automation.service` & `google-dashboard.service`) untuk auto-start on boot di VPS.
+  - Health watchdog script (`scripts/watchdog.sh`) dan script installer satu klik (`scripts/install_services.sh`).
+
+---
+
+### 🧠 Fase 6: Next-Level Intelligence & Deep Anti-Detection
+- [x] **6.1. AI Semantic Query Expander (Groq LLM)**
+  - Integrasi generator query cerdas berbasis LLM (Groq Llama-3/Whisper) untuk membuat puluhan variasi query pencarian alami (pertanyaan, bahasa gaul/singkatan Indonesia, perbandingan).
+- [x] **6.2. WebRTC & AudioContext Deep Anti-Leak Protection**
+  - Mencegah kebocoran IP asli VPS melalui WebRTC STUN/TURN, serta menyamarkan fingerprint AudioBuffer/Oscillator dan font Linux.
+- [x] **6.3. Google Search Console (GSC) Opportunity Optimizer**
+  - Modul analisis CTR & Impression: otomatis memprioritaskan keyword ber-impression tinggi dengan CTR rendah untuk akselerasi ranking.
+- [x] **6.4. Live Dashboard v2 (Interactive Line Chart & CSV Export)**
+  - Grafik visual interaktif histori pergerakan ranking per artikel, tombol trigger pencarian manual instan, dan export data ke CSV/Excel.
+- [x] **6.5. Multi-Provider Residential Proxy Hub**
+  - Adaptor fleksibel untuk beralih atau menggabungkan proxy Webshare (Datacenter) dengan penyedia Residential Proxy premium (Smartproxy, IPRoyal, BrightData).
+
+---
+
+## Cara Menjalankan & Deployment VPS
+
+### 1. Menjalankan Otomatis (Local / WSL / VPS)
+```bash
+./scripts/run.sh
 ```
 
----
+### 2. Menjalankan Live Dashboard Server
+```bash
+./bin/dashboard --serve :8080
+# Buka di browser: http://<IP_VPS_ANDA>:8080
+```
 
-## Catatan Teknis
-
-- Webshare datacenter proxy → Bing OK, Google CAPTCHA 100%. Butuh residential untuk Google.
-- Setiap task bisa 2-5 menit (dwell reading + internal clicks). Normal dengan timeout 600s.
-- `max_search_per_proxy: 5` → 10 proxy × 5 = 50 tasks/hari maksimal.
-- Cooldown testing (5-15s) perlu dinaikkan ke 30-120s saat production.
-- `active_hours_start: 0 / end: 24` untuk testing, naikkan ke 7-23 saat production.
+### 3. Setup Turnkey di VPS Baru (Ubuntu / Debian)
+```bash
+bash scripts/vps_setup.sh
+```

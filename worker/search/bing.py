@@ -1,24 +1,14 @@
 """
 search/bing.py
 ==============
-Bing search flow with humanized behavior.
-
-Responsibilities:
-  - Navigate to Bing.com
-  - Type the search query with 80-200ms per-char random variance
-  - Handle Bing's search interactions (search box, search button, wait for results)
-  - Check for CAPTCHA
-  - Return parsed SERP results + target domain position
-
-Flow is analogous to google.py but with Bing-specific selectors and URLs.
+Bing search flow (SeleniumBase UC sync).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
-from typing import Optional
+import time
 
 from browser.humanizer import (
     type_humanized,
@@ -26,7 +16,6 @@ from browser.humanizer import (
     random_pause,
     random_mouse_jitter,
     human_scroll,
-    mouse_bezier,
     human_click_element,
 )
 from search.serp import (
@@ -36,7 +25,7 @@ from search.serp import (
     detect_captcha,
     click_target_with_variation,
 )
-from captcha.solver import solve_recaptcha
+from captcha.solver import solve_captcha
 
 CAPTCHA_MAX_ATTEMPTS = 3
 
@@ -50,188 +39,90 @@ BING_SEARCH_INPUT_SELECTORS = [
     'textarea[role="combobox"]',
     "#searchbox",
     'input[type="search"]',
-    'textarea[type="search"]',
     'input[aria-label="Search"]',
-    'textarea[aria-label="Search"]',
 ]
 
 
-async def navigate_to_bing(page) -> None:
-    """Navigate to Bing homepage with realistic timing."""
+def navigate_to_bing(sb) -> None:
     logger.info("Navigating to %s", BING_URL)
+    sb.open(BING_URL)
+    time.sleep(random.uniform(0.5, 1.5))
 
-    await page.goto(BING_URL, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # Dismiss Bing consent / cookie banner if present.
-    # The banner (div.bnp_overlay_wrapper) intercepts pointer events on the search box.
-    consent_selectors = [
-        "#bnp_btn_accept",                    # "Accept" button
-        "#bnp_btn_reject",                    # "Reject" button
-        "div.bnp_overlay_wrapper button",     # generic overlay button
-        "[id^='bnp'] button",
-        "[aria-label='Accept']",
-        "[aria-label='Agree']",
-    ]
-    for sel in consent_selectors:
+    for sel in BING_SEARCH_INPUT_SELECTORS:
         try:
-            btn = await page.query_selector(sel)
-            if btn:
-                await human_click_element(page, btn)
-                logger.info("Dismissed Bing consent banner via: %s", sel)
-                await asyncio.sleep(random.uniform(0.8, 1.5))
-                break
+            sb.wait_for_element(sel, timeout=5)
+            logger.debug("Found Bing search input: %s", sel)
+            return
         except Exception:
             continue
 
-    # Wait for the search box
-    search_found = False
-    for selector in BING_SEARCH_INPUT_SELECTORS:
-        try:
-            el = await page.wait_for_selector(selector, timeout=5000)
-            if el:
-                search_found = True
-                logger.debug("Found Bing search input: %s", selector)
-                break
-        except Exception:
-            continue
-
-    if not search_found:
-        logger.warning("Could not find Bing search input")
+    logger.warning("Could not find Bing search input")
 
 
-async def perform_bing_search(page, query: str) -> bool:
-    """
-    Type a query into Bing's search box and submit.
-
-    Uses humanized typing (80-200ms per char with variance).
-    Returns True if search was submitted successfully.
-    """
+def perform_bing_search(sb, query: str) -> bool:
     logger.info("Performing Bing search: %s", query[:80])
+    random_mouse_jitter(sb, duration_s=1.0)
 
-    # Move mouse around first
-    await random_mouse_jitter(page, duration_s=1.0)
-
-    # Find the search input
-    search_input = None
     matched_selector = None
-    for selector in BING_SEARCH_INPUT_SELECTORS:
+    for sel in BING_SEARCH_INPUT_SELECTORS:
         try:
-            search_input = await page.query_selector(selector)
-            if search_input:
-                matched_selector = selector
+            if sb.is_element_visible(sel):
+                matched_selector = sel
                 break
         except Exception:
             continue
 
-    if not search_input:
+    if not matched_selector:
         logger.error("Bing search input not found")
         return False
 
-    # Click the search box (human-like)
-    box = await search_input.bounding_box()
-    if box:
-        await mouse_bezier(page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        await asyncio.sleep(random.uniform(0.2, 0.5))
+    type_humanized(sb, matched_selector, query)
+    time.sleep(random.uniform(0.5, 1.5))
+    press_enter_humanized(sb, matched_selector)
 
-    # Type the query humanized
-    if matched_selector:
-        await type_humanized(page, matched_selector, query)
-    else:
-        await page.keyboard.type(query, delay=random.randint(80, 200))
-
-    # Small pause before submitting
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # Submit: press Enter
-    await press_enter_humanized(page)
-
-    # Wait for results to load
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-        await asyncio.sleep(random.uniform(1.0, 2.0))
+        sb.wait_for_element("ol#b_results, #b_results", timeout=15)
+        time.sleep(random.uniform(1.0, 3.0))
     except Exception as e:
         logger.warning("Bing results page load timeout: %s", e)
-
-    # Dismiss any consent banner that appears on SERP page too
-    consent_selectors = [
-        "#bnp_btn_accept",
-        "#bnp_btn_reject",
-        "div.bnp_overlay_wrapper button",
-        "[id^='bnp'] button",
-    ]
-    for sel in consent_selectors:
-        try:
-            btn = await page.query_selector(sel)
-            if btn:
-                await human_click_element(page, btn)
-                logger.info("Dismissed Bing SERP consent banner via: %s", sel)
-                await asyncio.sleep(random.uniform(0.8, 1.5))
-                break
-        except Exception:
-            continue
 
     return True
 
 
-async def bing_search_flow(
-    page,
-    query: str,
-    target_domain: str,
-) -> SerpSearchOutcome:
-    """
-    Full Bing search flow: navigate → search → parse SERP → find target.
-
-    Returns SerpSearchOutcome with found/position/captcha/error.
-    """
+def bing_search_flow(sb, query: str, target_domain: str) -> SerpSearchOutcome:
     try:
-        # Navigate to Bing
-        await navigate_to_bing(page)
+        navigate_to_bing(sb)
 
-        # Check for CAPTCHA on homepage
-        if await detect_captcha(page, "bing"):
-            logger.warning("CAPTCHA on Bing homepage — attempting audio solve")
-            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+        if detect_captcha(sb, "bing"):
+            logger.warning("CAPTCHA on Bing homepage — attempting UC solve")
+            solved = solve_captcha(sb, max_attempts=CAPTCHA_MAX_ATTEMPTS)
             if not solved:
-                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — audio solve failed")
-            logger.info("CAPTCHA solved — retrying search")
-            await navigate_to_bing(page)
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — solve failed")
+            navigate_to_bing(sb)
 
-        # Perform the search
-        success = await perform_bing_search(page, query)
+        site_query = f"site:{target_domain} {query}"
+        logger.debug("Bing query with site filter: %s", site_query[:120])
+        success = perform_bing_search(sb, site_query)
         if not success:
             return SerpSearchOutcome(error="Failed to submit Bing search")
 
-        # Check for CAPTCHA after search
-        if await detect_captcha(page, "bing"):
-            logger.warning("CAPTCHA after Bing search — attempting audio solve")
-            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+        if detect_captcha(sb, "bing"):
+            logger.warning("CAPTCHA after search — attempting UC solve")
+            solved = solve_captcha(sb, max_attempts=CAPTCHA_MAX_ATTEMPTS)
             if not solved:
-                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — audio solve failed")
-            logger.info("CAPTCHA solved after search — continuing")
-            await random_pause(2, 4)
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — solve failed")
+            random_pause(2, 4)
 
-        # Browse the SERP
-        await human_scroll(page, random.randint(300, 600))
-        await random_pause(2, 5)
+        human_scroll(sb, random.randint(300, 600))
+        random_pause(2, 5)
 
-        # Find the target domain
-        outcome = await find_target_in_serp(page, target_domain, engine="bing")
-
-        return outcome
+        return find_target_in_serp(sb, target_domain, engine="bing")
 
     except Exception as e:
         logger.error("Bing search flow error: %s", e, exc_info=True)
         return SerpSearchOutcome(error=str(e))
 
 
-async def bing_click_target(
-    page,
-    target_result: SerpResult,
-    competitor_click_chance: float = 0.0,
-) -> None:
-    """
-    Click the target result on the Bing SERP with variation strategy.
-    Delegates to serp.click_target_with_variation().
-    """
-    await click_target_with_variation(page, target_result, engine="bing", competitor_click_chance=competitor_click_chance)
+def bing_click_target(sb, target_result: SerpResult, competitor_click_chance: float = 0.0) -> None:
+    click_target_with_variation(sb, target_result, engine="bing",
+                                competitor_click_chance=competitor_click_chance)

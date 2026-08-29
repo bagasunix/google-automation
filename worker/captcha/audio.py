@@ -34,8 +34,8 @@ _WORD_TO_DIGIT = {
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
 }
 
-DEFAULT_BACKEND = "google_web"
-DEFAULT_WHISPER_MODEL = "large-v3"
+DEFAULT_BACKEND = "openai_api"
+DEFAULT_WHISPER_MODEL = "base"
 
 _whisper_model_cache = None
 
@@ -106,37 +106,55 @@ async def download_audio(frame) -> Optional[bytes]:
 
 def transcribe_audio(audio_bytes: bytes, backend: str = None) -> Optional[str]:
     """
-    Transcribe audio bytes to text using the specified backend.
+    Transcribe audio bytes to text using the configured backend with automatic fallback.
 
-    Args:
-        audio_bytes: Raw audio data (MP3 or WAV)
-        backend: "google_web", "whisper", "google_cloud", or None (read from config)
-
-    Returns cleaned text or None.
+    Fallback chain:
+      1. Configured backend (e.g. openai_api / Groq)
+      2. Google Web Speech API (free, fast)
+      3. Local Whisper model
     """
     if backend is None:
         backend = _get_configured_backend()
-    logger.info("Transcribing audio with backend: %s", backend)
+    logger.info("Transcribing audio (requested backend: %s)", backend)
 
     wav_path = _convert_to_wav(audio_bytes)
     if not wav_path:
         return None
 
     try:
-        if backend == "whisper":
+        raw = None
+        used_backend = backend
+
+        # Primary attempt
+        if backend == "openai_api":
+            raw = _transcribe_openai_api(wav_path)
+        elif backend == "whisper":
             raw = _transcribe_whisper(wav_path)
         elif backend == "google_cloud":
             raw = _transcribe_google_cloud(wav_path)
-        elif backend == "openai_api":
-            raw = _transcribe_openai_api(wav_path)
-        else:
+        elif backend == "google_web":
             raw = _transcribe_google_web(wav_path)
 
+        # Fallback 1: Google Web Speech API
+        if not raw and backend != "google_web":
+            logger.info("Primary backend '%s' failed/unavailable — falling back to 'google_web'", backend)
+            raw = _transcribe_google_web(wav_path)
+            if raw:
+                used_backend = "google_web"
+
+        # Fallback 2: Local Whisper
+        if not raw and backend != "whisper":
+            logger.info("Falling back to local 'whisper' model")
+            raw = _transcribe_whisper(wav_path)
+            if raw:
+                used_backend = "whisper"
+
         if not raw:
+            logger.error("All transcription backends failed to transcribe audio")
             return None
 
         text = _clean_transcription(raw)
-        logger.info("Transcription: '%s' (raw: '%s', backend: %s)", text, raw, backend)
+        logger.info("Transcription success: '%s' (raw: '%s', backend: %s)", text, raw, used_backend)
         return text
     finally:
         try:
@@ -276,12 +294,16 @@ def _transcribe_google_cloud(wav_path: str) -> Optional[str]:
 
 def _transcribe_openai_api(wav_path: str) -> Optional[str]:
     cfg = _load_captcha_config()
-    api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+    api_key = (
+        cfg.get("openai_api_key")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+    )
     base_url = cfg.get("openai_base_url")  # e.g. https://api.groq.com/openai/v1
-    model = cfg.get("openai_model", "whisper-1")
+    model = cfg.get("openai_model", "whisper-large-v3-turbo" if "groq" in (base_url or "") else "whisper-1")
 
     if not api_key:
-        logger.error("openai_api backend: no api_key in config captcha.openai_api_key or OPENAI_API_KEY env")
+        logger.debug("openai_api backend: no API key found in config or OPENAI_API_KEY/GROQ_API_KEY env")
         return None
 
     try:
@@ -341,17 +363,16 @@ def validate_backend() -> bool:
         return True
 
     if backend == "openai_api":
-        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY")
         if not api_key:
-            logger.error(
-                "CAPTCHA backend 'openai_api': no API key — set captcha.openai_api_key in config.yaml "
-                "or export OPENAI_API_KEY"
+            logger.info(
+                "CAPTCHA backend 'openai_api': no API key configured. Will use 'google_web' and 'whisper' fallback."
             )
-            return False
+            return True
         try:
             from openai import OpenAI  # noqa: F401
         except ImportError:
-            logger.error("CAPTCHA backend 'openai_api': openai package not installed — run: uv pip install openai")
+            logger.error("CAPTCHA backend 'openai_api': openai package not installed — run: pip install openai")
             return False
         base_url = cfg.get("openai_base_url") or "https://api.openai.com/v1"
         model = cfg.get("openai_model", "whisper-1")

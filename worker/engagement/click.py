@@ -1,24 +1,13 @@
 """
 engagement/click.py
 ===================
-Internal link click simulation during engagement.
-
-Responsibilities:
-  - Always click 1-2 internal links after reading the main article
-  - For each internal article: full simulate_reading (scroll, pause at headings,
-    code blocks, images) — same as the main article, not a quick skim
-  - Navigate back to the original article after each internal read
-  - Mouse movement: bezier curve to the link
-
-The goal is to simulate a real reader who finishes the article, then follows
-related links — reading each one properly before going back.
+Internal link click simulation (sync).
 """
 
 from __future__ import annotations
 
-import asyncio
-import random
 import logging
+import random
 from urllib.parse import urlparse
 
 from browser.humanizer import (
@@ -31,137 +20,126 @@ from browser.humanizer import (
 logger = logging.getLogger("worker.engagement.click")
 
 
-async def _find_internal_links(page, target_domain: str, limit: int = 10) -> list:
-    """
-    Find internal links on the current article page.
+def _find_internal_links(sb, target_domain: str, limit: int = 10) -> list:
+    try:
+        elements = sb.find_elements("article a[href], main a[href], .content a[href], .post a[href]")
+        if not elements:
+            elements = sb.find_elements("a[href]")
 
-    Internal links are <a> tags whose href points to the same domain.
-    We exclude navigation, footer, and sidebar links — focusing on in-content links.
-
-    Returns a list of Playwright ElementHandles.
-    """
-    all_links = await page.query_selector_all("a[href]")
-
-    internal_links = []
-    target_domain_clean = target_domain.lower().lstrip("www.")
-
-    for link in all_links:
-        try:
-            href = await link.get_attribute("href") or ""
-            if not href or href.startswith("#") or href.startswith("javascript:"):
+        links = []
+        seen_urls = set()
+        for el in elements:
+            try:
+                href = el.get_attribute("href") or ""
+                if not href.startswith("http"):
+                    continue
+                parsed = urlparse(href)
+                domain = parsed.netloc.lstrip("www.")
+                if target_domain not in domain:
+                    continue
+                if href in seen_urls:
+                    continue
+                # Skip navigation/footer anchors
+                text = el.text.strip()
+                if not text or len(text) < 3:
+                    continue
+                seen_urls.add(href)
+                links.append(el)
+                if len(links) >= limit:
+                    break
+            except Exception:
                 continue
-
-            href_domain = urlparse(href).netloc.lower().lstrip("www.")
-            if not href_domain:
-                href_domain = target_domain_clean
-            if target_domain_clean not in href_domain:
-                continue
-
-            # Skip nav/footer/sidebar links
-            is_in_content = await link.evaluate("""
-                (el) => {
-                    const contentParents = el.closest('article, main, .post-content, .entry-content, .content, .post-body, .article-body');
-                    const navParents = el.closest('nav, footer, header, .sidebar, .menu, .navigation, .widget');
-                    return contentParents !== null && navParents === null;
-                }
-            """)
-
-            if is_in_content:
-                text = await link.inner_text()
-                if text and len(text.strip()) > 3:
-                    internal_links.append(link)
-                    if len(internal_links) >= limit:
-                        break
-
-        except Exception:
-            continue
-
-    logger.info("Found %d internal links in article content", len(internal_links))
-    return internal_links
+        return links
+    except Exception as e:
+        logger.warning("_find_internal_links error: %s", e)
+        return []
 
 
-async def simulate_internal_clicks(page, target_domain: str) -> int:
+def simulate_internal_clicks(sb, target_domain: str) -> int:
     """
-    Simulate clicking 1-2 internal links on the article page.
-
-    Behavior:
-      - Always attempt to click 1-2 internal articles (human-like behavior)
-      - For each: full reading simulation (scroll, pause at headings, etc.)
-      - Navigate back to original article after each read
-
-    Returns the number of internal clicks performed.
+    Click 1-2 internal links and read each one.
+    Simulates both same-tab navigation (with back button) and multi-tab browsing (Ctrl+Click / new tab).
+    Returns number of clicks.
     """
-    # Import here to avoid circular dependency
-    from engagement.dwell import simulate_reading
-
-    # Always click 1-2 articles — this is natural reading behavior
-    target_clicks = random.randint(1, 2)
-    clicks = 0
-
-    # Find internal links
-    links = await _find_internal_links(page, target_domain)
+    links = _find_internal_links(sb, target_domain)
     if not links:
-        logger.info("No internal links found — skipping internal click simulation")
+        logger.info("No internal links found")
         return 0
 
-    # Store original URL to navigate back
-    original_url = page.url
+    n_clicks = random.randint(1, min(2, len(links)))
+    chosen = random.sample(links, n_clicks)
+    clicked = 0
 
-    while clicks < target_clicks and links:
-        # Scroll a bit before clicking — like a reader scanning the page for the next link
-        await human_scroll(page, random.randint(100, 300))
-        await random_pause(2, 5)
+    original_url = sb.get_current_url()
 
-        # Pick a random internal link
-        link = random.choice(links)
-        links.remove(link)
-
-        logger.info("Clicking internal link #%d of %d", clicks + 1, target_clicks)
-
-        # Move mouse naturally to the link and click
-        success = await human_click_element(page, link)
-        if not success:
-            logger.warning("Failed to click internal link — trying next")
-            continue
-
-        # Wait for the linked page to load
+    for link in chosen:
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            await asyncio.sleep(random.uniform(1.5, 3.0))
-        except Exception as e:
-            logger.warning("Internal link page load timeout: %s", e)
+            text = link.text.strip()[:60]
+            href = link.get_attribute("href") or ""
+            use_new_tab = random.random() < 0.40
 
-        # --- Full reading simulation on the internal article ---
-        logger.info("Reading internal article (full simulation)...")
-        try:
-            dwell, depth = await simulate_reading(page, target_domain)
-            logger.info("Internal article: dwell=%ds scroll=%d%%", dwell, depth)
-        except Exception as e:
-            logger.warning("Reading simulation failed on internal article: %s", e)
-            # Fallback: simple pause + scroll
-            await random_pause(20, 40)
-            await human_scroll(page, random.randint(300, 700))
+            if use_new_tab and href:
+                logger.info("Opening internal link in NEW TAB: %s", text)
+                sb.execute_script("window.open(arguments[0], '_blank');", href)
+                time.sleep(1.5)
+                # Switch to new tab
+                windows = sb.driver.window_handles
+                if len(windows) > 1:
+                    sb.switch_to_window(1)
+                    sb.wait_for_ready_state_complete(timeout=15)
+                    random_pause(4, 10)
+                    random_mouse_jitter(sb, duration_s=random.uniform(1, 2.5))
 
-        clicks += 1
+                    scroll_steps = random.randint(3, 5)
+                    for _ in range(scroll_steps):
+                        human_scroll(sb, random.randint(200, 400))
+                        random_pause(2, 6)
 
-        # Navigate back to original article
-        logger.info("Going back to original article after internal read")
-        try:
-            await page.go_back()
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            await asyncio.sleep(random.uniform(1, 2))
-        except Exception as e:
-            logger.warning("Failed to go back: %s — navigating directly", e)
+                    # Close new tab and return to main
+                    sb.driver.close()
+                    sb.switch_to_window(0)
+                    time.sleep(1.0)
+                    clicked += 1
+                    continue
+
+            logger.info("Clicking internal link (same tab): %s", text)
+            human_click_element(sb, link)
+            sb.wait_for_ready_state_complete(timeout=15)
+            random_pause(1.5, 3.0)
+
+            # Read the internal article
+            random_pause(5, 12)
+            random_mouse_jitter(sb, duration_s=random.uniform(1, 3))
+
+            scroll_steps = random.randint(3, 6)
+            for _ in range(scroll_steps):
+                human_scroll(sb, random.randint(200, 400))
+                random_pause(3, 8)
+
+            if random.random() < 0.4:
+                human_scroll(sb, -random.randint(150, 300))
+                random_pause(2, 5)
+
+            random_pause(3, 8)
+            clicked += 1
+
+            sb.go_back()
             try:
-                await page.goto(original_url, wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(random.uniform(1, 2))
+                sb.wait_for_ready_state_complete(timeout=15)
             except Exception:
-                break
+                pass
+            random_pause(1, 2)
 
-        # Small pause on original article before potentially clicking another link
-        if clicks < target_clicks and links:
-            await random_pause(3, 8)
-            await random_mouse_jitter(page, duration_s=random.uniform(1, 3))
+        except Exception as e:
+            logger.warning("Internal click failed: %s", e)
+            # Ensure we're on the main tab and page
+            try:
+                if len(sb.driver.window_handles) > 1:
+                    sb.switch_to_window(0)
+                if domain not in sb.get_current_url():
+                    sb.open(original_url)
+            except Exception:
+                pass
 
-    logger.info("Internal click simulation done: %d clicks performed", clicks)
-    return clicks
+    logger.info("Internal clicks done: %d", clicked)
+    return clicked

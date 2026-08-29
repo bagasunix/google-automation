@@ -58,11 +58,22 @@ else
     exit 1
 fi
 
+# Auto-detect Go path
+if command -v go &>/dev/null; then
+    GO_CMD="go"
+elif [ -f "$HOME/go-sdk/go/bin/go" ]; then
+    export PATH="$HOME/go-sdk/go/bin:$PATH"
+    GO_CMD="go"
+fi
+
 # --- 5. Start Go orchestrator ---
 echo "[5/5] Starting Go orchestrator..."
 cd "$PROJECT_DIR"
-export PATH="$GO_BIN:$PATH"
-go run cmd/main.go &
+if [ -f "$PROJECT_DIR/bin/orchestrator" ]; then
+    "$PROJECT_DIR/bin/orchestrator" &
+else
+    $GO_CMD run cmd/main.go &
+fi
 GO_PID=$!
 echo "      Go PID: $GO_PID"
 

@@ -157,28 +157,53 @@ func (s *Scheduler) IsEnginePaused(engine string) bool {
 	return time.Now().Before(until)
 }
 
-// PickEngineAvailable selects an engine based on ratio, but skips engines
+// PickEngineAvailable selects a traffic engine based on ratio, but skips engines
 // that are currently paused or have ratio == 0.
-// Returns empty string if no engine is available.
+// Returns empty string if no traffic source is available.
 func (s *Scheduler) PickEngineAvailable() string {
 	googleOK := !s.IsEnginePaused("google") && s.cfg.EngineRatio.Google > 0
 	bingOK := !s.IsEnginePaused("bing") && s.cfg.EngineRatio.Bing > 0
+	directOK := s.cfg.EngineRatio.Direct > 0
+	socialOK := s.cfg.EngineRatio.Social > 0
 
-	if !googleOK && !bingOK {
+	type candidate struct {
+		name   string
+		weight int
+	}
+
+	var active []candidate
+	totalWeight := 0
+
+	if googleOK {
+		active = append(active, candidate{name: "google", weight: s.cfg.EngineRatio.Google})
+		totalWeight += s.cfg.EngineRatio.Google
+	}
+	if bingOK {
+		active = append(active, candidate{name: "bing", weight: s.cfg.EngineRatio.Bing})
+		totalWeight += s.cfg.EngineRatio.Bing
+	}
+	if directOK {
+		active = append(active, candidate{name: "direct", weight: s.cfg.EngineRatio.Direct})
+		totalWeight += s.cfg.EngineRatio.Direct
+	}
+	if socialOK {
+		active = append(active, candidate{name: "social", weight: s.cfg.EngineRatio.Social})
+		totalWeight += s.cfg.EngineRatio.Social
+	}
+
+	if totalWeight == 0 || len(active) == 0 {
 		return ""
 	}
-	if !googleOK {
-		return "bing"
+
+	roll := rand.Intn(totalWeight)
+	accum := 0
+	for _, c := range active {
+		accum += c.weight
+		if roll < accum {
+			return c.name
+		}
 	}
-	if !bingOK {
-		return "google"
-	}
-	// Both available — use configured ratio
-	roll := rand.Intn(s.cfg.EngineRatio.Google + s.cfg.EngineRatio.Bing)
-	if roll < s.cfg.EngineRatio.Google {
-		return "google"
-	}
-	return "bing"
+	return active[0].name
 }
 
 // DailyReset clears all per-engine CAPTCHA pauses and the global pause at
@@ -191,13 +216,9 @@ func (s *Scheduler) DailyReset() {
 	fmt.Println("[scheduler] daily reset: cleared all engine CAPTCHA pauses")
 }
 
-// PickEngine selects a search engine based on the configured ratio (Google 70 / Bing 30).
+// PickEngine selects a traffic engine based on configured ratios.
 func (s *Scheduler) PickEngine() string {
-	roll := rand.Intn(s.cfg.EngineRatio.Google + s.cfg.EngineRatio.Bing)
-	if roll < s.cfg.EngineRatio.Google {
-		return "google"
-	}
-	return "bing"
+	return s.PickEngineAvailable()
 }
 
 // IsProxyWithinActiveHours checks whether the current time falls within the

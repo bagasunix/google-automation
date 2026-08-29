@@ -42,3 +42,9 @@ Thumbs.db
 *.log
 *.db-shm
 *.db-wal
+
+# Secrets & Environment
+.env
+*.env
+.env.*
+!.env.example

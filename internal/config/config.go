@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,10 +28,12 @@ type TelegramConfig struct {
 	ChatID   string `yaml:"chat_id"`
 }
 
-// EngineRatio defines the percentage split between search engines.
+// EngineRatio defines the traffic source distribution split.
 type EngineRatio struct {
 	Google int `yaml:"google"`
 	Bing   int `yaml:"bing"`
+	Direct int `yaml:"direct"`
+	Social int `yaml:"social"`
 }
 
 // SchedulerConfig holds all scheduler-related tuning knobs.
@@ -57,10 +60,17 @@ type SchedulerConfig struct {
 
 // ProxyConfig configures proxy scraping and health checking.
 type ProxyConfig struct {
+	Provider             string   `yaml:"provider"`               // "webshare" | "residential" | "custom_file"
 	RefreshIntervalHours int      `yaml:"refresh_interval_hours"`
 	HealthCheckTimeout   int      `yaml:"health_check_timeout"`
-	WebshareAPIKey       string   `yaml:"webshare_api_key"`  // legacy single key (backward compat)
-	WebshareAPIKeys      []string `yaml:"webshare_api_keys"` // multi-key rotation
+	WebshareAPIKey       string   `yaml:"webshare_api_key"`       // legacy single key (backward compat)
+	WebshareAPIKeys      []string `yaml:"webshare_api_keys"`      // multi-key rotation
+	ResidentialHost      string   `yaml:"residential_host"`       // e.g. "gate.smartproxy.com"
+	ResidentialPort      int      `yaml:"residential_port"`       // e.g. 7000
+	ResidentialUser      string   `yaml:"residential_user"`       // username
+	ResidentialPassword  string   `yaml:"residential_password"`   // password
+	ResidentialCountry   string   `yaml:"residential_country"`    // e.g. "id", "us"
+	CustomProxyFile      string   `yaml:"custom_proxy_file"`      // path to proxies.txt
 	Sources              []string `yaml:"sources"`
 }
 
@@ -87,8 +97,11 @@ type BandwidthConfig struct {
 	PauseThresholdPercent   int  `yaml:"pause_threshold_percent"`
 }
 
-// Load reads and parses the YAML config from the given path.
+// Load reads and parses the YAML config from the given path,
+// and applies environment variable overrides (from .env or system environment).
 func Load(path string) (*Config, error) {
+	loadDotEnv(".env")
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -99,8 +112,52 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
+	cfg.applyEnvOverrides()
 	cfg.applyDefaults()
 	return &cfg, nil
+}
+
+// loadDotEnv parses a standard .env file if it exists and sets environment variables.
+func loadDotEnv(envPath string) {
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			if os.Getenv(k) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
+}
+
+// applyEnvOverrides allows secrets to be provided via environment variables.
+func (c *Config) applyEnvOverrides() {
+	if keys := os.Getenv("WEBSHARE_API_KEYS"); keys != "" {
+		c.Proxy.WebshareAPIKeys = strings.Split(keys, ",")
+		for i := range c.Proxy.WebshareAPIKeys {
+			c.Proxy.WebshareAPIKeys[i] = strings.TrimSpace(c.Proxy.WebshareAPIKeys[i])
+		}
+	} else if key := os.Getenv("WEBSHARE_API_KEY"); key != "" {
+		c.Proxy.WebshareAPIKey = key
+	}
+
+	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
+		c.Telegram.BotToken = token
+		c.Telegram.Enabled = true
+	}
+	if chatID := os.Getenv("TELEGRAM_CHAT_ID"); chatID != "" {
+		c.Telegram.ChatID = chatID
+	}
 }
 
 // applyDefaults fills in sensible defaults for any zero-value fields.

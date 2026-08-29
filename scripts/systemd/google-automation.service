@@ -1,0 +1,19 @@
+[Unit]
+Description=Google Automation Engine (Orchestrator + Python Worker)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Project/google-automation
+EnvironmentFile=-/root/Project/google-automation/.env
+ExecStart=/bin/bash /root/Project/google-automation/scripts/run.sh
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

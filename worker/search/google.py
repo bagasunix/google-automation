@@ -1,32 +1,14 @@
 """
 search/google.py
 ================
-Google search flow with humanized behavior.
-
-Responsibilities:
-  - Navigate to Google.com
-  - Type the search query with 80-200ms per-char random variance
-  - Handle Google's search interactions (search box focus, enter, wait for results)
-  - Check for CAPTCHA / "unusual traffic"
-  - Return parsed SERP results + target domain position
-
-Flow:
-  1. Navigate to google.com
-  2. Wait for page load
-  3. Locate search input (multiple selector fallbacks)
-  4. Type query character by character (humanized)
-  5. Press Enter or click search button
-  6. Wait for SERP to load
-  7. Detect CAPTCHA
-  8. Return the page reference (SERP parsing done by serp.py)
+Google search flow (SeleniumBase UC sync).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
-from typing import Optional
+import time
 
 from browser.humanizer import (
     type_humanized,
@@ -43,7 +25,7 @@ from search.serp import (
     detect_captcha,
     click_target_with_variation,
 )
-from captcha.solver import solve_recaptcha
+from captcha.solver import solve_sorry_captcha, detect_recaptcha_version
 
 CAPTCHA_MAX_ATTEMPTS = 3
 
@@ -55,182 +37,186 @@ GOOGLE_SEARCH_INPUT_SELECTORS = [
     'input[name="q"]',
     'textarea[role="combobox"]',
     "#APjFqb",
-    "#searchform input[type='text']",
     "textarea.gLFyf",
     'input[aria-label="Search"]',
     'textarea[aria-label="Search"]',
 ]
 
 
-async def navigate_to_google(page) -> None:
-    """Navigate to Google homepage with realistic timing."""
+def navigate_to_google(sb) -> None:
     logger.info("Navigating to %s", GOOGLE_URL)
+    sb.open(GOOGLE_URL)
+    time.sleep(random.uniform(0.5, 1.5))
 
-    await page.goto(GOOGLE_URL, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # Dismiss Google consent / cookie banner if present.
-    # The banner (div.eLZYyf) intercepts pointer events on the search box.
+    # Dismiss consent/cookie banner
     consent_selectors = [
-        "button#L2AGLb",          # "Accept all" (English)
-        "button#W0wltc",          # "Reject all"
-        "div.eLZYyf button",      # generic overlay button
-        "form[action*='consent'] button",
+        "button#L2AGLb",
+        "button#W0wltc",
         "[aria-label='Accept all']",
         "[aria-label='Agree']",
+        "form[action*='consent'] button",
     ]
     for sel in consent_selectors:
         try:
-            btn = await page.query_selector(sel)
-            if btn:
-                await human_click_element(page, btn)
-                logger.info("Dismissed Google consent banner via: %s", sel)
-                await asyncio.sleep(random.uniform(0.8, 1.5))
+            if sb.is_element_visible(sel):
+                el = sb.find_element(sel)
+                human_click_element(sb, el)
+                logger.info("Dismissed consent banner: %s", sel)
+                time.sleep(random.uniform(0.8, 1.5))
                 break
         except Exception:
             continue
 
-    # Wait for the search box to appear
-    search_found = False
-    for selector in GOOGLE_SEARCH_INPUT_SELECTORS:
+    # Wait for search box
+    for sel in GOOGLE_SEARCH_INPUT_SELECTORS:
         try:
-            el = await page.wait_for_selector(selector, timeout=5000)
-            if el:
-                search_found = True
-                logger.debug("Found Google search input: %s", selector)
-                break
+            sb.wait_for_element(sel, timeout=5)
+            logger.debug("Found Google search input: %s", sel)
+            return
         except Exception:
             continue
 
-    if not search_found:
-        logger.warning("Could not find Google search input — page may be blocked")
+    try:
+        logger.warning(
+            "Could not find Google search input. URL=%s title=%s",
+            sb.get_current_url(),
+            sb.get_title(),
+        )
+        src = sb.get_page_source()
+        logger.warning("Page source snippet: %s", src[:2000])
+    except Exception:
+        pass
+    logger.warning("Could not find Google search input")
 
 
-async def perform_google_search(page, query: str) -> bool:
-    """
-    Type a query into Google's search box and submit.
-
-    Uses humanized typing (80-200ms per char with variance, occasional typos).
-    Returns True if search was submitted successfully.
-    """
+def perform_google_search(sb, query: str) -> bool | str:
     logger.info("Performing Google search: %s", query[:80])
+    random_mouse_jitter(sb, duration_s=1.0)
 
-    # Move mouse to search area first
-    await random_mouse_jitter(page, duration_s=1.0)
-
-    # Find the search input
-    search_input = None
-    for selector in GOOGLE_SEARCH_INPUT_SELECTORS:
+    matched_selector = None
+    for sel in GOOGLE_SEARCH_INPUT_SELECTORS:
         try:
-            search_input = await page.query_selector(selector)
-            if search_input:
+            if sb.is_element_visible(sel):
+                matched_selector = sel
                 break
         except Exception:
             continue
 
-    if not search_input:
+    if not matched_selector:
         logger.error("Google search input not found")
         return False
 
-    # Click the search box (human-like)
-    box = await search_input.bounding_box()
-    if box:
-        from browser.humanizer import mouse_bezier
-        await mouse_bezier(page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        await asyncio.sleep(random.uniform(0.2, 0.5))
+    type_humanized(sb, matched_selector, query)
+    time.sleep(random.uniform(0.5, 1.5))
 
-    # Type the query humanized
-    # We need to use a valid selector — find which one matched
-    matched_selector = None
-    for selector in GOOGLE_SEARCH_INPUT_SELECTORS:
-        if await page.query_selector(selector):
-            matched_selector = selector
-            break
+    # Try clicking the Google Search button first — more reliable than Enter in UC mode
+    submitted = False
+    for btn_sel in ['input[name="btnK"]', 'input[aria-label="Google Search"]',
+                    'button[aria-label="Google Search"]', '[jsaction*="sf.chk"]']:
+        try:
+            if sb.is_element_visible(btn_sel):
+                el = sb.find_element(btn_sel)
+                human_click_element(sb, el)
+                submitted = True
+                logger.debug("Submitted via button: %s", btn_sel)
+                break
+        except Exception:
+            continue
 
-    if matched_selector:
-        await type_humanized(page, matched_selector, query)
-    else:
-        # Fallback: type into the focused element
-        await page.keyboard.type(query, delay=random.randint(80, 200))
+    if not submitted:
+        press_enter_humanized(sb, matched_selector)
 
-    # Small pause before submitting (human reads what they typed)
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-
-    # Submit: press Enter
-    await press_enter_humanized(page)
-
-    # Wait for results to load
+    # If URL didn't change after submit, fall back to direct search URL navigation
+    time.sleep(1.5)
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-        await asyncio.sleep(random.uniform(1.0, 3.0))  # let results render
+        post_enter_url = sb.get_current_url()
+        if "google.com/search" not in post_enter_url:
+            from urllib.parse import quote_plus
+            fallback_url = f"https://www.google.com/search?q={quote_plus(query)}"
+            logger.warning("Submit did not navigate (URL=%s) — navigating: %s", post_enter_url, fallback_url)
+            sb.open(fallback_url)
+            time.sleep(2)
+    except Exception as e:
+        logger.warning("Post-submit URL check failed: %s", e)
+
+    # Give the page a moment to start loading, then check for sorry/CAPTCHA
+    # before waiting for results — solveSimpleChallenge can auto-redirect fast.
+    time.sleep(2)
+    current_url = ""
+    try:
+        current_url = sb.get_current_url()
+    except Exception:
+        pass
+    if "/sorry/" in current_url or "ipv4.google.com/sorry" in current_url:
+        logger.warning("Google sorry/CAPTCHA page detected after search. URL=%s", current_url)
+        return "captcha"
+
+    try:
+        sb.wait_for_element("div#search, div#rso", timeout=20)
+        time.sleep(random.uniform(1.0, 3.0))
     except Exception as e:
         logger.warning("Google results page load timeout: %s", e)
+        # Check again after timeout — maybe auto-redirected from sorry
+        try:
+            current_url = sb.get_current_url()
+            if "/sorry/" in current_url:
+                logger.warning("CAPTCHA page still present after wait. URL=%s", current_url)
+                return "captcha"
+            src_snippet = sb.get_page_source()[:500]
+            logger.warning("Page after timeout — URL=%s src=%s", current_url, src_snippet)
+        except Exception:
+            pass
 
     return True
 
 
-async def google_search_flow(
-    page,
-    query: str,
-    target_domain: str,
-) -> SerpSearchOutcome:
-    """
-    Full Google search flow: navigate → search → parse SERP → find target.
-
-    Returns SerpSearchOutcome with:
-      - found: whether the target domain was found
-      - position: SERP position (0 = not found)
-      - captcha_hit: whether a CAPTCHA was detected
-      - error: error message if something went wrong
-    """
+def google_search_flow(sb, query: str, target_domain: str) -> SerpSearchOutcome:
     try:
-        # Navigate to Google
-        await navigate_to_google(page)
+        navigate_to_google(sb)
 
-        # Check for CAPTCHA on the homepage (rare but possible)
-        if await detect_captcha(page, "google"):
-            logger.warning("CAPTCHA on Google homepage — attempting audio solve")
-            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+        if detect_captcha(sb, "google"):
+            v = detect_recaptcha_version(sb)
+            logger.warning("CAPTCHA on Google homepage — version=%s", v)
+            if v == "v3":
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — reCAPTCHA v3 (score-based, unsolvable; rotate proxy)")
+            solved = solve_sorry_captcha(sb, max_attempts=CAPTCHA_MAX_ATTEMPTS)
             if not solved:
-                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — audio solve failed")
-            logger.info("CAPTCHA solved — retrying search")
-            await navigate_to_google(page)
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — token solve failed")
+            navigate_to_google(sb)
 
-        # Perform the search
-        success = await perform_google_search(page, query)
-        if not success:
+        search_result = perform_google_search(sb, query)
+        if search_result == "captcha":
+            v = detect_recaptcha_version(sb)
+            logger.warning("Google /sorry/ page detected — version=%s", v)
+            if v == "v3":
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA (/sorry/) — reCAPTCHA v3 (score-based, unsolvable; rotate proxy)")
+            solved = solve_sorry_captcha(sb, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+            if not solved:
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA (/sorry/) — token solve failed")
+            random_pause(2, 4)
+        elif not search_result:
             return SerpSearchOutcome(error="Failed to submit Google search")
 
-        # Check for CAPTCHA after search
-        if await detect_captcha(page, "google"):
-            logger.warning("CAPTCHA after search — attempting audio solve")
-            solved = await solve_recaptcha(page, max_attempts=CAPTCHA_MAX_ATTEMPTS)
+        if detect_captcha(sb, "google"):
+            v = detect_recaptcha_version(sb)
+            logger.warning("CAPTCHA after search — version=%s", v)
+            if v == "v3":
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — reCAPTCHA v3 (score-based, unsolvable; rotate proxy)")
+            solved = solve_sorry_captcha(sb, max_attempts=CAPTCHA_MAX_ATTEMPTS)
             if not solved:
-                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — audio solve failed")
-            logger.info("CAPTCHA solved after search — continuing")
-            await random_pause(2, 4)
+                return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA after search — token solve failed")
+            random_pause(2, 4)
 
-        # Browse the SERP (scroll a bit, read snippets)
-        await human_scroll(page, random.randint(300, 600))
-        await random_pause(2, 5)
+        human_scroll(sb, random.randint(300, 600))
+        random_pause(2, 5)
 
-        # Find the target domain in the results
-        outcome = await find_target_in_serp(page, target_domain, engine="google")
-
-        return outcome
+        return find_target_in_serp(sb, target_domain, engine="google")
 
     except Exception as e:
         logger.error("Google search flow error: %s", e, exc_info=True)
         return SerpSearchOutcome(error=str(e))
 
 
-async def google_click_target(
-    page,
-    target_result: SerpResult,
-    competitor_click_chance: float = 0.0,
-) -> None:
-    """
-    Click the target result on the Google SERP with variation strategy.
-    Delegates to serp.click_target_with_variation().
-    """
-    await click_target_with_variation(page, target_result, engine="google", competitor_click_chance=competitor_click_chance)
+def google_click_target(sb, target_result: SerpResult, competitor_click_chance: float = 0.0) -> None:
+    click_target_with_variation(sb, target_result, engine="google",
+                                competitor_click_chance=competitor_click_chance)

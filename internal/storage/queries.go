@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -228,6 +229,17 @@ func (db *DB) MarkArticleSearched(articleID int64, serpPosition int) error {
 		     serp_position = ?
 		 WHERE id = ?`,
 		now, now, serpPosition, articleID,
+	)
+	return err
+}
+
+// UpdateArticleSerpPositionByURL updates the SERP rank of an article matching URL.
+func (db *DB) UpdateArticleSerpPositionByURL(rawURL string, serpPosition int) error {
+	_, err := db.conn.Exec(
+		`UPDATE articles
+		 SET serp_position = ?
+		 WHERE url = ? OR url LIKE ?`,
+		serpPosition, rawURL, "%"+strings.TrimPrefix(rawURL, "https://")+"%",
 	)
 	return err
 }

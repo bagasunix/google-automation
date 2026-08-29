@@ -120,6 +120,34 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// Start the midnight daily-reset goroutine.
 	go o.dailyResetLoop()
 
+	// Start Telegram interactive command listener if configured.
+	if o.telegram != nil {
+		o.telegram.StartCommandListener(notify.CommandHandlers{
+			OnStatus: func() string {
+				return fmt.Sprintf("<b>⚡ Bot Status</b>\n• Available Proxies: <b>%d</b>\n• Total Proxies: <b>%d</b>\n• Orchestrator Running: <b>%t</b>",
+					o.pool.AvailableCount(), o.pool.TotalCount(), o.running)
+			},
+			OnStats: func() string {
+				summary, err := o.stats.TodaySummary()
+				if err != nil {
+					return "Error fetching stats: " + err.Error()
+				}
+				return fmt.Sprintf("<b>📊 Today Stats (%s)</b>\n• Searches: <b>%d</b>\n• Success: <b>%d (%.1f%%)</b>\n• CAPTCHA: <b>%d (%.1f%%)</b>\n• Avg Dwell: <b>%.1fs</b>\n• Avg SERP: <b>%.1f</b>",
+					summary.Date, summary.TotalSearch, summary.Success, summary.SuccessRate, summary.Captcha, summary.CaptchaRate, summary.AvgDwellSeconds, summary.AvgSerpPosition)
+			},
+			OnPause: func() string {
+				o.scheduler.TriggerEnginePause("google")
+				o.scheduler.TriggerEnginePause("bing")
+				return "⏸️ All search engines paused for 3 hours."
+			},
+			OnResume: func() string {
+				o.scheduler.DailyReset()
+				return "▶️ Engines resumed and pauses cleared."
+			},
+		})
+		log.Println("[orchestrator] telegram command listener started")
+	}
+
 	// --- Main loop ---
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -268,12 +296,18 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		o.bwTracker.RecordUsage(px.APIKeyIndex, 1024)
 	}
 
-	// 11. Check CAPTCHA rate and pause if needed.
+	// 11. Check CAPTCHA rate, update proxy health score, and pause if needed.
 	if resp != nil && resp.CaptchaHit {
 		// Per-engine pause — Google CAPTCHA doesn't stop Bing
 		o.scheduler.TriggerEnginePause(engine)
-		o.pool.Blacklist(px, "CAPTCHA hit during search")
-	} else if o.scheduler.CheckCaptchaRate() {
+		o.pool.RecordFailure(px, true, resp.Error)
+	} else if err != nil {
+		o.pool.RecordFailure(px, false, err.Error())
+	} else if resp != nil && resp.Success {
+		o.pool.RecordSuccess(px)
+	}
+
+	if o.scheduler.CheckCaptchaRate() {
 		// Aggregate CAPTCHA rate exceeded — global pause
 	}
 

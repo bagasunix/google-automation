@@ -1,56 +1,30 @@
 """
 browser/session.py
 ==================
-Stealth browser session builder with proxy injection.
+SeleniumBase UC stealth browser session.
 
-Responsibilities:
-  - Launch Playwright with headless Chromium (or headed if configured)
-  - Configure proxy (HTTP/SOCKS) from TaskRequest proxy_ip:proxy_port
-  - Apply stealth profile (UA, viewport, timezone, WebGL, canvas, WebRTC block)
-  - Fresh cookie jar per session (new browser context each time)
-  - Apply playwright-stealth if available (additional evasion patches)
-  - Provide a context manager for clean setup/teardown
-
-Usage:
-    async with StealthSession(proxy_ip="1.2.3.4", proxy_port=8080) as session:
-        page = await session.new_page()
-        await page.goto("https://google.com")
-        ...
-
-The session creates a fresh BrowserContext with:
-  - A randomised StealthProfile
-  - Proxy injected at context creation (Playwright supports per-context proxy)
-  - All stealth init scripts injected
-  - playwright-stealth applied if installed
+uc=True uses undetected-chromedriver which patches Chrome at driver level.
+headless=True uses Chrome's built-in new headless mode (--headless=new),
+which is significantly less detectable than the old --headless flag.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import random
+import time
 from dataclasses import dataclass
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-
-from browser.stealth import StealthProfile, apply_stealth
+from browser.stealth import StealthProfile, apply_stealth_to_sb
+from browser.ip_health import check_proxy_health
 
 logger = logging.getLogger("worker.browser.session")
 
 
 @dataclass
-class StealthSession:
-    """
-    A stealth browser session wrapping Playwright.
-
-    Attributes:
-        proxy_ip:     Proxy server IP (empty string = no proxy / direct)
-        proxy_port:   Proxy server port
-        proxy_scheme: "http" or "socks5"
-        headless:     Run browser headless (default True for server use)
-        profile:      StealthProfile to use (random if None)
-        slow_mo:      Slow down Playwright actions by N ms (debugging)
-    """
-
+class SBSession:
     proxy_ip: str = ""
     proxy_port: int = 0
     proxy_scheme: str = "http"
@@ -60,200 +34,145 @@ class StealthSession:
     proxy_timezone: str = ""
     headless: bool = True
     profile: Optional[StealthProfile] = None
-    slow_mo: int = 0
+    user_data_dir: Optional[str] = None
+    use_warm_profile: bool = True
 
-    # Internal state
-    _playwright = None
-    _browser: Optional[Browser] = None
-    _context: Optional[BrowserContext] = None
-    _page: Optional[Page] = None
-
-    # Bandwidth tracking: total bytes received through this session's proxy
+    _sb = None
+    _sb_ctx = None
     _bytes_received: int = 0
 
-    async def __aenter__(self) -> "StealthSession":
-        await self.start()
+    def __enter__(self) -> "SBSession":
+        self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+    def __exit__(self, *_):
+        self.close()
 
-    async def start(self) -> None:
-        """Launch the browser and create a stealthed context."""
-        logger.info(
-            "Starting stealth session: proxy=%s:%d (scheme=%s), headless=%s",
-            self.proxy_ip, self.proxy_port, self.proxy_scheme, self.headless,
-        )
+    def start(self, skip_health_check: bool = False) -> None:
+        from seleniumbase import SB
 
-        self._playwright = await async_playwright().start()
+        if not skip_health_check:
+            health = check_proxy_health(
+                proxy_ip=self.proxy_ip,
+                proxy_port=self.proxy_port,
+                proxy_username=self.proxy_username,
+                proxy_password=self.proxy_password,
+            )
+            if not health.ok:
+                raise RuntimeError(
+                    f"Proxy IP health check failed: {health.flag_reason} "
+                    f"(ip={health.ip} org={health.org!r})"
+                )
+            logger.info("IP health OK: %s", health)
 
-        # Generate a random stealth profile if none provided.
-        # If proxy geo is known, derive timezone + locale from it for consistency.
+        # Pre-import pyautogui with the current DISPLAY so Python caches it.
+        # SeleniumBase UC on Linux changes os.environ['DISPLAY'] before importing
+        # pyautogui, causing mouseinfo.__init__ to fail on the new non-existent
+        # display. Caching it here prevents the re-init inside SB.
+        if not os.environ.get("DISPLAY"):
+            os.environ["DISPLAY"] = ":0"
+        try:
+            import pyautogui as _  # noqa: F401
+        except Exception:
+            pass
+
         if self.profile is None:
             self.profile = StealthProfile.for_proxy(
                 country=self.proxy_country,
                 timezone=self.proxy_timezone,
             )
 
-        # Browser launch options
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--disable-infobars",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-component-extensions-with-background-pages",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--metrics-recording-only",
-            "--disable-default-apps",
-            "--disable-translate",
-            "--mute-audio",
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            # WebRTC: disable to prevent IP leak
-            "--enforce-webrtc-ip-permission-check",
-            "--disable-webrtc-multiple-routes",
-            "--disable-webrtc-hw-encoding",
-            "--disable-webrtc-hw-decoding",
-        ]
+        if self.profile.timezone:
+            os.environ["TZ"] = self.profile.timezone
 
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            args=launch_args,
-            slow_mo=self.slow_mo,
+        # Use new headless mode — far less detectable than old --headless
+        chrome_args = (
+            "--disable-dev-shm-usage "
+            "--no-sandbox "
+            "--disable-gpu "
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp "
+            "--window-size=1920,1080 "
+        )
+        if self.headless:
+            chrome_args += "--headless=new "
+
+        kwargs = dict(
+            uc=True,
+            xvfb=False,
+            # headed=True tells SB to skip its Linux virtual-display spawner.
+            # Chrome is still headless via --headless=new in chromium_arg.
+            headed=True,
+            agent=self.profile.user_agent,
+            chromium_arg=chrome_args.strip(),
         )
 
-        # Context options — proxy is set per-context
-        context_options = {
-            "user_agent": self.profile.user_agent,
-            "viewport": self.profile.viewport,
-            "timezone_id": self.profile.timezone,
-            "locale": self.profile.locale,
-            "device_scale_factor": self.profile.device_pixel_ratio,
-            "color_scheme": "light",
-            "java_script_enabled": True,
-            "ignore_https_errors": True,
-            # Note: resource blocking is handled via route() below (playwright API)
-        }
+        if self.use_warm_profile:
+            from browser.profiles import get_profile_dir, cleanup_profile
+            if not self.user_data_dir:
+                self.user_data_dir = get_profile_dir(proxy_ip=self.proxy_ip)
+            cleanup_profile(self.user_data_dir)
+            kwargs["user_data_dir"] = self.user_data_dir
+            logger.info("Using warm profile: %s", self.user_data_dir)
 
-        # Inject proxy if provided
         if self.proxy_ip and self.proxy_port:
-            proxy_url = f"{self.proxy_scheme}://{self.proxy_ip}:{self.proxy_port}"
-            context_options["proxy"] = {
-                "server": proxy_url,
-            }
-            # Add auth credentials for Webshare proxies
             if self.proxy_username and self.proxy_password:
-                context_options["proxy"]["username"] = self.proxy_username
-                context_options["proxy"]["password"] = self.proxy_password
-                logger.info("Proxy configured: %s (authenticated)", proxy_url)
+                # SB expects "user:pass@host:port" (no scheme prefix).
+                # Passing "http://user:pass@host:port" breaks SB's @ split,
+                # making proxy_user = "http://user" → Chrome auth fails.
+                proxy_str = (
+                    f"{self.proxy_username}:{self.proxy_password}"
+                    f"@{self.proxy_ip}:{self.proxy_port}"
+                )
             else:
-                logger.info("Proxy configured: %s", proxy_url)
+                proxy_str = f"{self.proxy_ip}:{self.proxy_port}"
+            kwargs["proxy"] = proxy_str
+            logger.info("Proxy configured: %s:%d", self.proxy_ip, self.proxy_port)
         else:
             logger.info("No proxy configured (direct connection)")
 
-        self._context = await self._browser.new_context(**context_options)
+        self._sb_ctx = SB(**kwargs)
+        self._sb = self._sb_ctx.__enter__()
 
-        # Bandwidth tracker: count bytes received through the proxy.
-        async def _on_response(response):
-            try:
-                cl = response.headers.get("content-length", "")
-                if cl and cl.isdigit():
-                    self._bytes_received += int(cl)
-            except Exception:
-                pass
-        self._context.on("response", _on_response)
+        # Inject CDP stealth script (Canvas noise, WebGL, navigator overrides)
+        apply_stealth_to_sb(self._sb, self.profile)
 
-        # Clear all storage to ensure fresh state per proxy — no cookies, cache,
-        # localStorage, sessionStorage, or IndexedDB carried over from previous session.
-        await self._context.clear_cookies()
+        vp = self.profile.viewport
+        self._sb.set_window_size(vp["width"], vp["height"])
 
-        # Block resources for bandwidth conservation (Webshare free = 1GB/month)
-        # Fonts + media + video + audio always blocked. Images kept for engagement realism.
-        from browser.bandwidth import aggressive_resource_blocker
-        await aggressive_resource_blocker(self._context, block_images=False)
+        logger.info(
+            "SB session ready. UA=%s, tz=%s, headless=%s",
+            self.profile.user_agent[:50],
+            self.profile.timezone,
+            self.headless,
+        )
 
-        # Apply our custom stealth init scripts
-        await apply_stealth(self._context, self.profile)
+    def apply_stealth(self) -> None:
+        """Re-apply CDP stealth script to the active browser session."""
+        if self._sb and self.profile:
+            apply_stealth_to_sb(self._sb, self.profile)
 
-        # Apply playwright-stealth if available (additional evasion layer)
-        await self._apply_playwright_stealth(self._context)
-
-        # Create default page
-        self._page = await self._context.new_page()
-
-        logger.info("Stealth session ready. Profile: UA=%s, tz=%s",
-                     self.profile.user_agent[:50], self.profile.timezone)
-
-    async def _apply_playwright_stealth(self, context: BrowserContext) -> None:
-        """Apply playwright-stealth v2 as an additional evasion layer."""
+    def close(self) -> None:
+        logger.info("Closing SB session")
         try:
-            from playwright_stealth import Stealth
-            stealth = Stealth()
-            await stealth.apply_stealth_async(context)
-            logger.info("playwright-stealth v2 applied (context-level)")
-        except ImportError:
-            logger.warning(
-                "playwright-stealth not installed — relying on custom stealth scripts only"
-            )
+            if self._sb_ctx:
+                self._sb_ctx.__exit__(None, None, None)
         except Exception as e:
-            logger.warning("playwright-stealth application failed: %s — continuing with custom stealth", e)
+            logger.warning("Error closing SB session: %s", e)
+        self._sb = None
+        self._sb_ctx = None
 
     @property
-    def page(self) -> Page:
-        """Get the default page."""
-        if self._page is None:
-            raise RuntimeError("Session not started. Use 'async with StealthSession(...)' or call start().")
-        return self._page
+    def sb(self):
+        if self._sb is None:
+            raise RuntimeError("Session not started.")
+        return self._sb
 
     @property
     def bytes_received_kb(self) -> int:
-        """Total bytes received through this session's proxy, in KB."""
         return self._bytes_received // 1024
 
-    @property
-    def context(self) -> BrowserContext:
-        """Get the browser context."""
-        if self._context is None:
-            raise RuntimeError("Session not started.")
-        return self._context
 
-    async def new_page(self) -> Page:
-        """Create a new page (tab) in the stealthed context."""
-        if self._context is None:
-            raise RuntimeError("Session not started.")
-        page = await self._context.new_page()
-        return page
-
-    async def close(self) -> None:
-        """Close the browser session cleanly."""
-        logger.info("Closing stealth session")
-        try:
-            if self._context:
-                await self._context.close()
-        except Exception as e:
-            logger.warning("Error closing context: %s", e)
-        try:
-            if self._browser:
-                await self._browser.close()
-        except Exception as e:
-            logger.warning("Error closing browser: %s", e)
-        try:
-            if self._playwright:
-                await self._playwright.stop()
-        except Exception as e:
-            logger.warning("Error stopping playwright: %s", e)
-
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
-
-
-async def create_session(
+def create_session(
     proxy_ip: str = "",
     proxy_port: int = 0,
     proxy_scheme: str = "http",
@@ -263,13 +182,9 @@ async def create_session(
     proxy_timezone: str = "",
     headless: bool = True,
     profile: Optional[StealthProfile] = None,
-) -> StealthSession:
-    """
-    Convenience function to create and start a stealth session.
-    Supports authenticated proxies (Webshare) via proxy_username/password.
-    Pass proxy_country + proxy_timezone for geo-consistent stealth profile.
-    """
-    session = StealthSession(
+    skip_health_check: bool = False,
+) -> SBSession:
+    session = SBSession(
         proxy_ip=proxy_ip,
         proxy_port=proxy_port,
         proxy_scheme=proxy_scheme,
@@ -280,5 +195,5 @@ async def create_session(
         headless=headless,
         profile=profile,
     )
-    await session.start()
+    session.start(skip_health_check=skip_health_check)
     return session

@@ -80,13 +80,30 @@ func (m *Manager) StartRefreshLoop() {
 // refresh performs the full scrape → health-check → persist → load cycle.
 func (m *Manager) refresh() error {
 	log.Println("[proxy-manager] === PROXY REFRESH START ===")
-	log.Println("[proxy-manager] scraping free proxies (parallel goroutines per source)…")
-	proxies, err := m.scraper.Scrape()
+	var proxies []Proxy
+	var err error
+
+	if m.cfg.Provider == "residential" && m.cfg.ResidentialHost != "" {
+		log.Printf("[proxy-manager] generating residential rotating proxies (%s:%d, country=%s)...",
+			m.cfg.ResidentialHost, m.cfg.ResidentialPort, m.cfg.ResidentialCountry)
+		proxies = GenerateResidentialProxies(m.cfg, 20)
+	} else if m.cfg.Provider == "custom_file" && m.cfg.CustomProxyFile != "" {
+		log.Printf("[proxy-manager] loading custom proxies from %s...", m.cfg.CustomProxyFile)
+		proxies, err = LoadCustomProxyFile(m.cfg.CustomProxyFile)
+		if err != nil {
+			log.Printf("[proxy-manager] custom file error (%v) — falling back to scraper", err)
+			proxies, err = m.scraper.Scrape()
+		}
+	} else {
+		log.Println("[proxy-manager] scraping proxies via Webshare / configured sources…")
+		proxies, err = m.scraper.Scrape()
+	}
+
 	if err != nil {
 		return fmt.Errorf("scrape: %w", err)
 	}
 	if len(proxies) == 0 {
-		return fmt.Errorf("no proxies scraped from any source")
+		return fmt.Errorf("no proxies loaded from configured provider")
 	}
 
 	log.Printf("[proxy-manager] health-checking %d proxies (parallel goroutines, 100 concurrent)…", len(proxies))

@@ -3,35 +3,8 @@ main.py
 =======
 gRPC server entry point for the Python search-automation worker.
 
-Responsibilities:
-  - Listen on localhost:50051 for gRPC TaskRequest messages from the Go orchestrator
-  - Execute the full humanized search flow:
-      1. Create stealth browser session (with proxy injection)
-      2. Pre-search with topical queries (NOT the article title)
-      3. Target search (search for the exact article title)
-      4. Find target domain in SERP, record position
-      5. SERP click variation (50% direct / 30% scroll past / 20% competitor first)
-      6. Post-click engagement (dwell, scroll, internal clicks, mouse movement)
-      7. Exit strategy (close / back / homepage / navigate)
-      8. Post-exit cooldown (30-120s)
-  - Return TaskResponse with result metrics
-  - Capture screenshot on error
-  - Save JSON result to disk
-
-gRPC mode:
-  Uses the real protobuf-generated stubs (generated/task_pb2.py, task_pb2_grpc.py).
-  Generated from task.proto via: python -m grpc_tools.protoc
-
-HTTP fallback mode:
-  If --http flag is used, runs a simple HTTP server that accepts POST /execute
-  with JSON body and returns JSON response.
-
-Usage:
-    python3 main.py                    # gRPC on localhost:50051
-    python3 main.py --port 50052       # custom port
-    python3 main.py --http             # force HTTP fallback mode
-    python3 main.py --headed           # run browser in headed mode (debugging)
-    python3 main.py --no-cooldown      # skip post-exit cooldown (debugging)
+SeleniumBase UC is synchronous — task execution runs in a ThreadPoolExecutor
+so the async gRPC server stays non-blocking.
 """
 
 from __future__ import annotations
@@ -41,18 +14,30 @@ import asyncio
 import logging
 import os
 import sys
-import json
-import time
 import random
-from typing import Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
 
-# Ensure local imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ---------------------------------------------------------------------------
-# Import protobuf messages and gRPC stubs
-# Try real protobuf first, fall back to manual JSON-based classes
-# ---------------------------------------------------------------------------
+def _load_dotenv_file():
+    for candidate in [".env", "../.env", os.path.expanduser("~/Project/google-automation/.env")]:
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k not in os.environ:
+                                os.environ[k] = v
+                break
+            except Exception:
+                pass
+
+_load_dotenv_file()
 
 try:
     from generated.task_pb2 import TaskRequest, TaskResponse
@@ -64,7 +49,7 @@ except Exception as _e:
     task_pb2_grpc = None
     USE_REAL_GRPC = False
 
-from browser.session import StealthSession, create_session
+from browser.session import create_session
 from browser.humanizer import random_pause, human_scroll, random_mouse_jitter
 from search.google import google_search_flow, google_click_target
 from search.bing import bing_search_flow, bing_click_target
@@ -74,10 +59,6 @@ from engagement.click import simulate_internal_clicks
 from engagement.exit import exit_article, post_exit_cooldown
 from reporter import build_result, save_result_json, log_result, capture_screenshot
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -85,61 +66,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker.main")
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-BASE_DIR = os.path.expanduser("~/Project/google-automation")
 DEFAULT_PORT = 50051
-
-# Module-level args (set in main())
 _ARGS = None
 
 
 # ---------------------------------------------------------------------------
-# Task executor — the core search automation flow
+# Core task execution (synchronous — runs inside ThreadPoolExecutor)
 # ---------------------------------------------------------------------------
 
-async def execute_task(request) -> object:
-    """
-    Execute the full humanized search flow for a single task.
-
-    Accepts a TaskRequest (protobuf or fallback) and returns a TaskResponse.
-
-    Flow:
-      1. Create stealth browser session with proxy
-      2. Pre-search #1 (topical query from pre_search_queries)
-      3. Pre-search #2 (optional, 50% chance — another topical query)
-      4. Target search (exact article title)
-      5. Find target domain in SERP
-      6. SERP click variation
-      7. Post-click engagement (dwell, scroll, internal clicks)
-      8. Exit strategy + cooldown
-    """
-    # Extract fields from the protobuf request (works for both real and fallback)
-    task_id = request.task_id
-    article_title = request.article_title
-    article_url = request.article_url
-    domain = request.domain
-    proxy_ip = request.proxy_ip
-    proxy_port = request.proxy_port
-    engine = request.engine or "google"
-    # Handle repeated string field (protobuf returns RepeatedScalarContainer)
+def execute_task_sync(request) -> object:
+    task_id          = request.task_id
+    article_title    = request.article_title
+    article_url      = request.article_url
+    domain           = request.domain
+    proxy_ip         = request.proxy_ip
+    proxy_port       = request.proxy_port
+    engine           = request.engine or "google"
     pre_search_queries = list(request.pre_search_queries) if request.pre_search_queries else []
-    # Proxy auth credentials (for Webshare authenticated proxies)
-    proxy_username = getattr(request, "proxy_username", "")
-    proxy_password = getattr(request, "proxy_password", "")
-    proxy_country = getattr(request, "proxy_country", "")
-    proxy_timezone = getattr(request, "proxy_timezone", "")
 
-    # Bandwidth-saving behavior controls
-    pre_search_enabled = getattr(request, "pre_search_enabled", True)
-    pre_search_2_chance = getattr(request, "pre_search_2_chance", 0.0)
+    proxy_username   = getattr(request, "proxy_username", "")
+    proxy_password   = getattr(request, "proxy_password", "")
+    proxy_country    = getattr(request, "proxy_country", "")
+    proxy_timezone   = getattr(request, "proxy_timezone", "")
+
+    pre_search_enabled      = getattr(request, "pre_search_enabled", True)
+    pre_search_2_chance     = getattr(request, "pre_search_2_chance", 0.0)
     serp_casual_click_chance = getattr(request, "serp_casual_click_chance", 0.0)
-    competitor_click_chance = getattr(request, "competitor_click_chance", 0.0)
-    distraction_exit_chance = getattr(request, "distraction_exit_chance", 0.0)
-    serp_dwell_min = getattr(request, "serp_dwell_seconds_min", 2)
-    serp_dwell_max = getattr(request, "serp_dwell_seconds_max", 5)
+    competitor_click_chance  = getattr(request, "competitor_click_chance", 0.0)
+    distraction_exit_chance  = getattr(request, "distraction_exit_chance", 0.0)
 
     proxy_str = f"{proxy_ip}:{proxy_port}" if proxy_ip else "direct"
     if proxy_username:
@@ -147,28 +101,25 @@ async def execute_task(request) -> object:
 
     logger.info("=" * 60)
     logger.info("TASK START: %s", task_id)
-    logger.info("  article:  %s", article_title[:80])
-    logger.info("  domain:   %s", domain)
-    logger.info("  engine:   %s", engine)
-    logger.info("  proxy:    %s", proxy_str)
-    logger.info("  pre_search_queries: %s", pre_search_queries)
+    logger.info("  article: %s", article_title[:80])
+    logger.info("  domain:  %s", domain)
+    logger.info("  engine:  %s", engine)
+    logger.info("  proxy:   %s", proxy_str)
     logger.info("=" * 60)
 
-    # Initialise response fields with defaults
-    serp_position = 0
-    dwell_time = 0
-    scroll_depth = 0
+    serp_position  = 0
+    dwell_time     = 0
+    scroll_depth   = 0
     internal_clicks = 0
-    captcha_hit = False
-    error_msg = ""
-    success = False
-
-    session = None
+    captcha_hit    = False
+    error_msg      = ""
+    success        = False
+    session        = None
 
     try:
-        # === Step 1: Create stealth browser session ===
-        logger.info("[Step 1] Creating stealth browser session")
-        session = await create_session(
+        # Step 1: create stealth session
+        logger.info("[Step 1] Creating SeleniumBase UC session")
+        session = create_session(
             proxy_ip=proxy_ip,
             proxy_port=proxy_port,
             proxy_username=proxy_username,
@@ -177,138 +128,170 @@ async def execute_task(request) -> object:
             proxy_timezone=proxy_timezone,
             headless=not _ARGS.headed if _ARGS else True,
         )
-        page = session.page
+        sb = session.sb
 
-        # === Step 2: Pre-search #1 (topical query, NOT the article title) ===
+        # Direct & Social Referral Traffic Flows
+        if engine in ("direct", "social"):
+            logger.info("Executing %s traffic flow for %s", engine.upper(), article_url)
+            if engine == "social":
+                social_referrers = [
+                    "https://t.co/",
+                    "https://www.reddit.com/r/technology/",
+                    "https://www.linkedin.com/feed/",
+                    "https://news.ycombinator.com/",
+                ]
+                ref = random.choice(social_referrers)
+                logger.info("Simulating social referrer arrival: %s", ref)
+                sb.open(article_url)
+            else:
+                # Direct traffic: 40% visit homepage first, 60% direct article bookmark
+                if random.random() < 0.40:
+                    sb.open(f"https://{domain}")
+                    time.sleep(random.uniform(3, 6))
+                    sb.open(article_url)
+                else:
+                    sb.open(article_url)
+
+            sb.wait_for_ready_state_complete(timeout=15)
+            time.sleep(random.uniform(2, 4))
+            current_url = sb.get_current_url()
+
+            if domain in current_url:
+                logger.info("Landed on target article via %s traffic", engine)
+                dwell_time, scroll_depth = simulate_reading(sb, domain)
+                internal_clicks = simulate_internal_clicks(sb, domain)
+                success = True
+                exit_article(sb, domain, distraction_exit_chance)
+            else:
+                error_msg = f"Failed to land on {domain}. Current URL: {current_url}"
+                logger.warning(error_msg)
+            return TaskOutcome(
+                task_id=task_id,
+                success=success,
+                engine=engine,
+                proxy_used=f"{proxy_ip}:{proxy_port}",
+                serp_position=1,
+                dwell_time_seconds=dwell_time,
+                scroll_depth_percent=scroll_depth,
+                internal_clicks=internal_clicks,
+                captcha_hit=False,
+                error=error_msg,
+                bandwidth_used_kb=0,
+            )
+
+        # Step 2: pre-search #1
+        from search.query_expander import expand_queries_ai
+        if not pre_search_queries:
+            pre_search_queries = expand_queries_ai(article_title, domain=domain)
+
         if pre_search_enabled and pre_search_queries:
             pre_query_1 = pre_search_queries[0]
             logger.info("[Step 2] Pre-search #1: %s", pre_query_1)
-
-            outcome = await _do_search(page, pre_query_1, domain, engine)
+            outcome = _do_search(sb, pre_query_1, domain, engine)
 
             if outcome.captcha_hit:
                 captcha_hit = True
                 error_msg = "CAPTCHA during pre-search #1: " + outcome.error
-                logger.error(error_msg)
-                await capture_screenshot(page, task_id, "captcha_presearch1")
+                capture_screenshot(sb, task_id, "captcha_presearch1")
                 raise RuntimeError(error_msg)
 
-            # Browse the SERP (read snippets, scroll, maybe click a random result)
-            await _browse_serp_casually(page, engine, domain, serp_casual_click_chance)
+            _browse_serp_casually(sb, engine, domain, serp_casual_click_chance)
+            random_pause(3, 8)
 
-            # Small pause between searches
-            await random_pause(3, 8)
-
-            # === Step 3: Pre-search #2 (configurable chance) ===
+            # Step 3: pre-search #2
             if len(pre_search_queries) > 1 and random.random() < pre_search_2_chance:
                 pre_query_2 = pre_search_queries[1]
                 logger.info("[Step 3] Pre-search #2: %s", pre_query_2)
-
-                outcome2 = await _do_search(page, pre_query_2, domain, engine)
+                outcome2 = _do_search(sb, pre_query_2, domain, engine)
 
                 if outcome2.captcha_hit:
                     captcha_hit = True
                     error_msg = "CAPTCHA during pre-search #2: " + outcome2.error
-                    logger.error(error_msg)
-                    await capture_screenshot(page, task_id, "captcha_presearch2")
+                    capture_screenshot(sb, task_id, "captcha_presearch2")
                     raise RuntimeError(error_msg)
 
-                await _browse_serp_casually(page, engine, domain, serp_casual_click_chance)
-                await random_pause(3, 8)
+                _browse_serp_casually(sb, engine, domain, serp_casual_click_chance)
+                random_pause(3, 8)
             else:
                 logger.info("[Step 3] Pre-search #2 skipped (chance=%.0f%%)", pre_search_2_chance * 100)
         else:
             logger.info("[Step 2-3] Pre-search skipped (enabled=%s)", pre_search_enabled)
 
-        # === Step 4: Target search (exact article title) ===
+        # Step 4: target search
         logger.info("[Step 4] Target search: %s", article_title[:80])
-        target_outcome = await _do_search(page, article_title, domain, engine)
+        target_outcome = _do_search(sb, article_title, domain, engine)
 
         if target_outcome.captcha_hit:
             captcha_hit = True
             error_msg = "CAPTCHA during target search: " + target_outcome.error
-            logger.error(error_msg)
-            await capture_screenshot(page, task_id, "captcha_target")
+            capture_screenshot(sb, task_id, "captcha_target")
             raise RuntimeError(error_msg)
 
         if not target_outcome.found:
-            error_msg = f"Target domain '{domain}' not found in SERP for query '{article_title}'"
+            error_msg = f"Target domain '{domain}' not found in SERP"
             logger.warning(error_msg)
-            success = False
-            await capture_screenshot(page, task_id, "target_not_found")
+            capture_screenshot(sb, task_id, "target_not_found")
         else:
             serp_position = target_outcome.position
-            logger.info("[Step 4] Target found at SERP position %d", serp_position)
+            logger.info("[Step 4] Target found at position %d", serp_position)
 
-            # === Step 5: SERP click variation ===
-            logger.info("[Step 5] Clicking target with variation strategy")
-            target_result = None
-            for r in target_outcome.results:
-                if r.position == serp_position:
-                    target_result = r
-                    break
-
+            # Step 5: SERP click variation
+            logger.info("[Step 5] Clicking target")
+            target_result = next(
+                (r for r in target_outcome.results if r.position == serp_position), None
+            )
             if target_result and target_result.element_ref:
                 if engine == "google":
-                    await google_click_target(page, target_result, competitor_click_chance)
+                    google_click_target(sb, target_result, competitor_click_chance)
                 else:
-                    await bing_click_target(page, target_result, competitor_click_chance)
+                    bing_click_target(sb, target_result, competitor_click_chance)
             else:
-                logger.warning("No element ref — trying to click target by URL")
-                await _click_target_by_url(page, article_url, engine)
+                logger.warning("No element ref — opening target URL directly")
+                sb.open(article_url)
 
-            # === Step 6: Verify we landed on the target article ===
-            await asyncio.sleep(random.uniform(1, 3))
-            current_url = page.url
+            # Step 6: verify landing
+            time.sleep(random.uniform(1, 3))
+            current_url = sb.get_current_url()
             logger.info("Landed on: %s", current_url)
 
             if domain in current_url:
                 logger.info("Successfully landed on target article")
 
-                # === Step 7: Post-click engagement ===
-                logger.info("[Step 7] Post-click engagement: reading simulation")
+                # Step 7: engagement
+                logger.info("[Step 7] Post-click engagement")
+                dwell_time, scroll_depth = simulate_reading(sb, domain)
+                logger.info("Dwell: %ds, Scroll: %d%%", dwell_time, scroll_depth)
 
-                dwell_time, scroll_depth = await simulate_reading(page, domain)
-                logger.info("Dwell: %ds, Scroll depth: %d%%", dwell_time, scroll_depth)
-
-                internal_clicks = await simulate_internal_clicks(page, domain)
+                internal_clicks = simulate_internal_clicks(sb, domain)
                 logger.info("Internal clicks: %d", internal_clicks)
 
                 success = True
 
-                # === Step 8: Exit strategy ===
+                # Step 8: exit strategy
                 logger.info("[Step 8] Exit strategy")
-                await exit_article(page, domain, session.context, distraction_exit_chance)
+                exit_article(sb, domain, distraction_exit_chance)
             else:
-                logger.warning("Did not land on target domain — URL: %s", current_url)
                 error_msg = f"Did not land on target article. URL: {current_url}"
-                success = False
-                await capture_screenshot(page, task_id, "wrong_landing")
+                logger.warning(error_msg)
+                capture_screenshot(sb, task_id, "wrong_landing")
 
     except RuntimeError as e:
         error_msg = str(e)
-        logger.error("Task failed (RuntimeError): %s", error_msg)
+        logger.error("Task failed: %s", error_msg)
         if "CAPTCHA" in error_msg:
             captcha_hit = True
     except Exception as e:
-        err_name = type(e).__name__
-        msg = str(e)
-        if err_name == "TargetClosedError" or "has been closed" in msg:
-            error_msg = "Task interrupted: browser closed mid-task"
-            logger.warning("Task %s interrupted: %s", task_id, err_name)
-        else:
-            error_msg = f"Unexpected error: {err_name}: {e}"
-            logger.error("Task failed: %s", error_msg, exc_info=True)
-            if session and session._page:
-                try:
-                    await capture_screenshot(session._page, task_id, "exception")
-                except Exception:
-                    pass
+        error_msg = f"Unexpected error: {type(e).__name__}: {e}"
+        logger.error("Task failed: %s", error_msg, exc_info=True)
+        if session and session._sb:
+            try:
+                capture_screenshot(session._sb, task_id, "exception")
+            except Exception:
+                pass
     finally:
         if session:
-            await session.close()
+            session.close()
 
-    # Build and save result
     result = build_result(
         task_id=task_id,
         success=success,
@@ -324,17 +307,10 @@ async def execute_task(request) -> object:
     save_result_json(result)
     log_result(result)
 
-    # === Step 9: Post-exit cooldown (30-120s) ===
-    if success and _ARGS and not _ARGS.no_cooldown:
-        logger.info("[Step 9] Post-exit cooldown")
-        await post_exit_cooldown(30, 120)
+    # Post-exit cooldown is managed centrally by the Go orchestrator
+    # with context cancellation and dynamic jitter.
 
-    # Build TaskResponse (real protobuf or fallback)
-    bw_used = session.bytes_received_kb if session else 0
-    if bw_used > 0:
-        logger.info("Bandwidth used: %d KB (%.1f MB)", bw_used, bw_used / 1024)
-
-    response = TaskResponse(
+    return TaskResponse(
         task_id=task_id,
         success=success,
         engine=engine,
@@ -345,143 +321,92 @@ async def execute_task(request) -> object:
         internal_clicks=internal_clicks,
         captcha_hit=captcha_hit,
         error=error_msg,
-        bandwidth_used_kb=bw_used,
+        bandwidth_used_kb=0,
     )
 
-    logger.info("TASK END: %s (success=%s)", task_id, success)
-    return response
-
 
 # ---------------------------------------------------------------------------
-# Helper functions
+# Helpers
 # ---------------------------------------------------------------------------
 
-async def _do_search(page, query: str, target_domain: str, engine: str) -> SerpSearchOutcome:
-    """Execute a search on the specified engine and return the outcome."""
+def _do_search(sb, query: str, target_domain: str, engine: str) -> SerpSearchOutcome:
     if engine == "google":
-        return await google_search_flow(page, query, target_domain)
-    else:
-        return await bing_search_flow(page, query, target_domain)
+        return google_search_flow(sb, query, target_domain)
+    return bing_search_flow(sb, query, target_domain)
 
 
-async def _browse_serp_casually(page, engine: str, target_domain: str, casual_click_chance: float = 0.0) -> None:
-    """
-    Browse the SERP casually during pre-search:
-      - Scroll through results (200-600px)
-      - Read snippets (2-5s)
-      - casual_click_chance probability: click a random non-target result, dwell, go back
-    """
-    logger.info("Casually browsing SERP (pre-search, click_chance=%.0f%%)", casual_click_chance * 100)
+def _browse_serp_casually(sb, engine: str, target_domain: str,
+                           casual_click_chance: float = 0.0) -> None:
+    logger.info("Casually browsing SERP (click_chance=%.0f%%)", casual_click_chance * 100)
+    human_scroll(sb, random.randint(200, 600))
+    random_pause(2, 5)
+    human_scroll(sb, random.randint(200, 400))
+    random_pause(3, 10)
 
-    await human_scroll(page, random.randint(200, 600))
-    await random_pause(2, 5)
-
-    await human_scroll(page, random.randint(200, 400))
-    await random_pause(3, 10)
-
-    if casual_click_chance <= 0:
+    if casual_click_chance <= 0 or random.random() >= casual_click_chance:
         return
 
-    if random.random() < casual_click_chance:
-        logger.info("Clicking a random result during pre-search browsing")
-        try:
-            if engine == "google":
-                links = await page.query_selector_all("div.g h3 a, div.g a[href]")
-            else:
-                links = await page.query_selector_all("li.b_algo h2 a")
-
-            non_target_links = []
-            for link in links:
-                try:
-                    href = await link.get_attribute("href") or ""
-                    if target_domain not in href and href.startswith("http"):
-                        non_target_links.append(link)
-                except Exception:
-                    continue
-
-            if non_target_links:
-                random_link = random.choice(non_target_links)
-                from browser.humanizer import human_click_element
-                clicked = await human_click_element(page, random_link)
-
-                if clicked:
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                        await asyncio.sleep(random.uniform(1.5, 3.0))
-                    except Exception:
-                        pass
-
-                    # === Proper dwell — like a real human reading the page ===
-                    # Initial scan
-                    await random_pause(5, 12)
-                    await random_mouse_jitter(page, duration_s=random.uniform(1, 3))
-
-                    # Scroll down in chunks — reading the article
-                    scroll_steps = random.randint(3, 6)
-                    for _ in range(scroll_steps):
-                        await human_scroll(page, random.randint(200, 400))
-                        await random_pause(3, 8)
-
-                    # Scroll back up a bit (re-reading)
-                    if random.random() < 0.4:
-                        await human_scroll(page, -random.randint(150, 300))
-                        await random_pause(2, 5)
-
-                    # Final pause before leaving
-                    await random_pause(3, 8)
-                    await random_mouse_jitter(page, duration_s=random.uniform(1, 2))
-
-                    logger.info("Done reading casual result — going back to SERP")
-                    await page.go_back()
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                        await asyncio.sleep(random.uniform(1, 2))
-                    except Exception:
-                        pass
-                    await random_pause(1, 3)
-
-        except Exception as e:
-            logger.warning("Error during casual SERP browsing: %s", e)
-
-    await random_mouse_jitter(page, duration_s=random.uniform(1, 3))
-
-
-async def _click_target_by_url(page, target_url: str, engine: str) -> None:
-    """Fallback: click a SERP result by matching its href to the target URL."""
     try:
-        if engine == "google":
-            links = await page.query_selector_all("div.g a[href], div.g h3 a")
-        else:
-            links = await page.query_selector_all("li.b_algo h2 a, li.b_algo a")
+        sel = "div.g h3 a, div.g a[href]" if engine == "google" else "li.b_algo h2 a"
+        links = sb.find_elements(sel)
+        non_target = [
+            l for l in links
+            if target_domain not in (l.get_attribute("href") or "")
+            and (l.get_attribute("href") or "").startswith("http")
+        ]
+        if not non_target:
+            return
 
-        for link in links:
-            href = await link.get_attribute("href") or ""
-            if target_url in href or href in target_url:
-                from browser.humanizer import human_click_element
-                await human_click_element(page, link)
-                return
+        link = random.choice(non_target)
+        from browser.humanizer import human_click_element
+        human_click_element(sb, link)
 
-        logger.warning("Could not find target URL in SERP results to click")
+        try:
+            sb.wait_for_ready_state_complete(timeout=15)
+            time.sleep(random.uniform(1.5, 3.0))
+        except Exception:
+            pass
+
+        random_pause(5, 12)
+        random_mouse_jitter(sb, duration_s=random.uniform(1, 3))
+
+        for _ in range(random.randint(3, 6)):
+            human_scroll(sb, random.randint(200, 400))
+            random_pause(3, 8)
+
+        if random.random() < 0.4:
+            human_scroll(sb, -random.randint(150, 300))
+            random_pause(2, 5)
+
+        random_pause(3, 8)
+        sb.go_back()
+        try:
+            sb.wait_for_ready_state_complete(timeout=15)
+        except Exception:
+            pass
+        random_pause(1, 3)
     except Exception as e:
-        logger.warning("Error in _click_target_by_url: %s", e)
+        logger.warning("Casual SERP browsing error: %s", e)
+
+    random_mouse_jitter(sb, duration_s=random.uniform(1, 3))
 
 
 # ---------------------------------------------------------------------------
-# gRPC server (using grpcio + generated stubs)
+# gRPC server
 # ---------------------------------------------------------------------------
+
+_executor = ThreadPoolExecutor(max_workers=4)
+
 
 class WorkerServiceServicer(task_pb2_grpc.WorkerServiceServicer):
-    """gRPC service implementation for WorkerService.ExecuteTask."""
-
     async def ExecuteTask(self, request, context):
-        """Execute a search automation task."""
-        logger.info("Received gRPC ExecuteTask request: task_id=%s", request.task_id)
+        logger.info("Received gRPC ExecuteTask: task_id=%s", request.task_id)
+        loop = asyncio.get_running_loop()
         try:
-            response = await execute_task(request)
+            response = await loop.run_in_executor(_executor, execute_task_sync, request)
             return response
         except Exception as e:
             logger.error("ExecuteTask error: %s", e, exc_info=True)
-            # Return error response
             return TaskResponse(
                 task_id=request.task_id,
                 success=False,
@@ -491,163 +416,75 @@ class WorkerServiceServicer(task_pb2_grpc.WorkerServiceServicer):
 
 
 async def run_grpc_server(port: int) -> None:
-    """
-    Run the gRPC server on localhost:50051 using grpc.aio.
-
-    Uses the real protobuf-generated stubs from task_pb2_grpc.py.
-    """
     import grpc
     from grpc import aio as grpc_aio
 
-    server = grpc_aio.server(
-        interceptors=[],
-        options=[
-            ("grpc.max_send_message_length", 50 * 1024 * 1024),
-            ("grpc.max_receive_message_length", 50 * 1024 * 1024),
-            ("grpc.so_reuseport", 0),
-        ],
-    )
-
-    task_pb2_grpc.add_WorkerServiceServicer_to_server(
-        WorkerServiceServicer(),
-        server,
-    )
-
-    server.add_insecure_port(f"127.0.0.1:{port}")
-
+    server = grpc_aio.server()
+    task_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerServiceServicer(), server)
+    addr = f"[::]:{port}"
+    server.add_insecure_port(addr)
     await server.start()
-    logger.info("gRPC server started on 127.0.0.1:%d", port)
-    logger.info("  Service: searchautomation.WorkerService")
-    logger.info("  Method:  ExecuteTask(TaskRequest) -> (TaskResponse)")
-
+    logger.info("gRPC server started on %s", addr)
     await server.wait_for_termination()
 
 
 # ---------------------------------------------------------------------------
-# HTTP fallback server (for when grpcio is not available)
+# HTTP fallback
 # ---------------------------------------------------------------------------
 
 async def run_http_server(port: int) -> None:
-    """
-    Simple HTTP server fallback.
-
-    Accepts POST /execute with JSON body (TaskRequest fields) and returns
-    JSON response (TaskResponse fields).
-    """
     from aiohttp import web
 
-    async def handle_execute(request: web.Request) -> web.Response:
-        try:
-            body = await request.json()
-            # Build a TaskRequest from JSON dict
-            task_req = TaskRequest(
-                task_id=body.get("task_id", ""),
-                article_title=body.get("article_title", ""),
-                article_url=body.get("article_url", ""),
-                domain=body.get("domain", ""),
-                proxy_ip=body.get("proxy_ip", ""),
-                proxy_port=body.get("proxy_port", 0),
-                engine=body.get("engine", "google"),
-                pre_search_queries=body.get("pre_search_queries", []),
-            )
-            logger.info("Received HTTP ExecuteTask request: %s", task_req.task_id)
-            response = await execute_task(task_req)
-
-            # Convert response to dict for JSON
-            if hasattr(response, "to_dict"):
-                resp_dict = response.to_dict()
-            else:
-                resp_dict = {
-                    "task_id": response.task_id,
-                    "success": response.success,
-                    "engine": response.engine,
-                    "proxy_used": response.proxy_used,
-                    "serp_position": response.serp_position,
-                    "dwell_time_seconds": response.dwell_time_seconds,
-                    "scroll_depth_percent": response.scroll_depth_percent,
-                    "internal_clicks": response.internal_clicks,
-                    "captcha_hit": response.captcha_hit,
-                    "error": response.error,
-                    "bandwidth_used_kb": response.bandwidth_used_kb,
-                }
-            return web.json_response(resp_dict)
-        except Exception as e:
-            logger.error("HTTP handler error: %s", e, exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def handle_health(request: web.Request) -> web.Response:
-        return web.json_response({"status": "ok", "service": "search-automation-worker"})
+    async def handle_execute(req):
+        body = await req.json()
+        task_req = TaskRequest(**body)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(_executor, execute_task_sync, task_req)
+        return web.json_response({
+            "task_id": response.task_id,
+            "success": response.success,
+            "serp_position": response.serp_position,
+            "dwell_time_seconds": response.dwell_time_seconds,
+            "scroll_depth_percent": response.scroll_depth_percent,
+            "internal_clicks": response.internal_clicks,
+            "captcha_hit": response.captcha_hit,
+            "error": response.error,
+        })
 
     app = web.Application()
     app.router.add_post("/execute", handle_execute)
-    app.router.add_get("/health", handle_health)
-
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", port)
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
-    logger.info("HTTP fallback server started on localhost:%d", port)
-    logger.info("  POST /execute  — execute a task (JSON body)")
-    logger.info("  GET  /health   — health check")
-
-    while True:
-        await asyncio.sleep(3600)
+    logger.info("HTTP server started on port %d", port)
+    await asyncio.Event().wait()
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Entry point
 # ---------------------------------------------------------------------------
 
-async def main():
+def main():
     global _ARGS
 
-    parser = argparse.ArgumentParser(description="Search Automation Python Worker")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on")
-    parser.add_argument("--http", action="store_true", help="Force HTTP fallback mode")
-    parser.add_argument("--headed", action="store_true", help="Run browser in headed mode (debugging)")
-    parser.add_argument("--no-cooldown", action="store_true", help="Skip post-exit cooldown (debugging)")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Search automation worker")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--http", action="store_true", help="Run HTTP fallback server")
+    parser.add_argument("--headed", action="store_true", help="Run browser headed (debug)")
+    parser.add_argument("--no-cooldown", action="store_true", help="Skip post-exit cooldown")
+    _ARGS = parser.parse_args()
 
-    _ARGS = args
-
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logger.debug("Debug logging enabled")
-
-    logger.info("=" * 60)
-    logger.info("Search Automation Python Worker")
-    logger.info("  Port: %d", args.port)
-    logger.info("  Headed: %s", args.headed)
-    logger.info("  Cooldown: %s", "disabled" if args.no_cooldown else "enabled")
-    logger.info("  gRPC stubs: %s", "real protobuf" if USE_REAL_GRPC else "fallback")
-    logger.info("  Mode: %s", "HTTP" if args.http else "gRPC")
-    logger.info("=" * 60)
-
-    # Ensure output directories exist
-    from reporter import ensure_dirs
-    ensure_dirs()
-
-    # Validate CAPTCHA audio backend before accepting any tasks
-    from captcha.audio import validate_backend
-    if not validate_backend():
-        logger.error("CAPTCHA backend validation failed — fix config and restart")
-        raise SystemExit(1)
-
-    if args.http or not USE_REAL_GRPC:
-        if not USE_REAL_GRPC and not args.http:
-            logger.warning("gRPC stubs not available — falling back to HTTP server")
-        await run_http_server(args.port)
+    if _ARGS.http:
+        logger.info("Starting HTTP fallback server on port %d", _ARGS.port)
+        asyncio.run(run_http_server(_ARGS.port))
+    elif USE_REAL_GRPC:
+        logger.info("Starting gRPC server on port %d", _ARGS.port)
+        asyncio.run(run_grpc_server(_ARGS.port))
     else:
-        await run_grpc_server(args.port)
+        logger.error("gRPC stubs not available and --http not specified. Exiting.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Worker shutting down (Ctrl+C)")
-    except Exception as e:
-        logger.error("Fatal error: %s", e, exc_info=True)
-        sys.exit(1)
+    main()

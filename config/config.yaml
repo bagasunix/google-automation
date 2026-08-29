@@ -5,8 +5,10 @@ domains:
   - bagasunix.com
 
 engine_ratio:
-  google: 100
-  bing: 0
+  google: 70
+  bing: 10
+  direct: 10
+  social: 10
 
 scheduler:
   max_search_per_proxy: 1          # testing: 1 search per proxy
@@ -34,12 +36,8 @@ proxy:
   health_check_timeout: 8
   # Legacy single key (backward compat) — akan diabaikan jika webshare_api_keys diisi
   webshare_api_key: ""
-  # Multi-key rotation: key #0 dipakai dulu sampai semua proxy-nya habis/CAPTCHA,
-  # baru pindah ke key #1, dst.
-  webshare_api_keys:
-    - "4o2y8qp2pijurc2gefxjnsyff53ljmhqnsa6zjg6"  # key #0 (bandwidth exhausted)
-    - "h5v1f7iv613kg03wvtlbd4os97bnk1b72y983lrj"  # key #1 (active)
-    # - "YOUR_THIRD_API_KEY_HERE"                   # key #2
+  # Multi-key rotation: jika kosong, akan dimuat dari WEBSHARE_API_KEYS di .env
+  webshare_api_keys: []
   sources: []
   # sources (disabled — hanya pakai Webshare API):
     # GitHub raw lists
@@ -62,15 +60,16 @@ grpc:
 captcha:
   enabled: true                # attempt audio reCAPTCHA solving
   max_attempts: 3              # retry count per CAPTCHA encounter
-  solver: "openai_api"         # "google_web" | "whisper" (local) | "google_cloud" | "openai_api"
-  whisper_model: "large-v3"    # hanya untuk solver: "whisper"
+  solver: "openai_api"         # "openai_api" (Groq/OpenAI) | "google_web" | "whisper" (local)
+  whisper_model: "base"        # "base" (~70MB, cepat) | "small" (~140MB)
   # --- openai_api backend (OpenAI, Groq, atau provider lain yang OpenAI-compatible) ---
+  # Jika openai_api_key kosong, akan otomatis membaca OPENAI_API_KEY dari .env
   openai_api_key: ""
   openai_base_url: "https://api.groq.com/openai/v1"  # kosongkan untuk OpenAI default
   openai_model: "whisper-large-v3-turbo"             # model STT di provider tersebut
   # --- token injection solver untuk Google /sorry/ reCAPTCHA v2 ---
   token_solver: "capsolver"    # "capsolver" | "2captcha"
-  token_solver_key: ""         # isi dengan API key capsolver.com atau 2captcha.com
+  token_solver_key: ""         # atau set TOKEN_SOLVER_KEY di .env
 
 bandwidth:
   monthly_limit_mb: 1024      # Webshare free plan = 1GB per key per month
