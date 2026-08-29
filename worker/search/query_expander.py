@@ -75,7 +75,7 @@ def expand_queries_ai(title: str, topic: str = "", domain: str = "", max_queries
         or os.environ.get("GROQ_API_KEY")
     )
     base_url = captcha_cfg.get("openai_base_url") or "https://api.groq.com/openai/v1"
-    model = "llama-3.1-8b-instant" if "groq" in base_url else "gpt-4o-mini"
+    model = "openai/gpt-oss-20b" if "groq" in base_url else "gpt-4o-mini"
 
     if not api_key:
         logger.debug("No API key for AI Query Expander — using heuristic generator")

@@ -11,30 +11,28 @@ import (
 // Proxy queries
 // ---------------------------------------------------------------------------
 
-// UpsertProxy inserts a proxy or updates it if the (ip, port) pair already exists.
+// UpsertProxy inserts a proxy or updates it if the (ip, port, username) pair already exists.
 func (db *DB) UpsertProxy(p *Proxy) (int64, error) {
 	res, err := db.conn.Exec(
 		`INSERT INTO proxies (ip, port, protocol, country, timezone, username, password, active, latency_ms)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-		 ON CONFLICT(ip, port) DO UPDATE SET
+		 ON CONFLICT(ip, port, username) DO UPDATE SET
 		   protocol=excluded.protocol,
 		   country=excluded.country,
 		   timezone=excluded.timezone,
-		   username=excluded.username,
 		   password=excluded.password,
 		   active=1,
 		   latency_ms=excluded.latency_ms`,
 		p.IP, p.Port, p.Protocol, p.Country, p.Timezone, p.Username, p.Password, p.LatencyMs,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("upsert proxy %s:%d: %w", p.IP, p.Port, err)
+		return 0, fmt.Errorf("upsert proxy %s:%d:%s: %w", p.IP, p.Port, p.Username, err)
 	}
 
-	// On CONFLICT the last_insert_rowid() may not reflect the existing row.
 	// Query it back for correctness.
 	var id int64
 	err = db.conn.QueryRow(
-		`SELECT id FROM proxies WHERE ip=? AND port=?`, p.IP, p.Port,
+		`SELECT id FROM proxies WHERE ip=? AND port=? AND username=?`, p.IP, p.Port, p.Username,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("lookup proxy id: %w", err)
@@ -244,13 +242,23 @@ func (db *DB) UpdateArticleSerpPositionByURL(rawURL string, serpPosition int) er
 	return err
 }
 
-// ArticleSearchCap returns how many searches this article has already had.
-func (db *DB) ArticleSearchCap(articleID int64) (int, error) {
-	var count int
+// ArticleByID retrieves an article by its ID.
+func (db *DB) ArticleByID(id int64) (*Article, error) {
+	var a Article
 	err := db.conn.QueryRow(
-		`SELECT searched_count FROM articles WHERE id=?`, articleID,
-	).Scan(&count)
-	return count, err
+		`SELECT id, domain, url, title, meta_desc, topic,
+		        searched_count, last_searched_at, first_searched_at,
+		        serp_position, created_at
+		 FROM articles WHERE id=?`, id,
+	).Scan(
+		&a.ID, &a.Domain, &a.URL, &a.Title, &a.MetaDesc, &a.Topic,
+		&a.SearchedCount, &a.LastSearchedAt, &a.FirstSearchedAt,
+		&a.SerpPosition, &a.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // ---------------------------------------------------------------------------

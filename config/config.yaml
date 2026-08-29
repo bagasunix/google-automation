@@ -1,6 +1,11 @@
 # Search Automation Config
 # Edit domain list, engine ratio, dan settings sesuai kebutuhan
 
+auth:
+  enabled: true
+  username: "admin"
+  password: "bagasunix2026"
+
 domains:
   - bagasunix.com
 
@@ -11,6 +16,11 @@ engine_ratio:
   social: 10
 
 scheduler:
+  concurrency: 4                   # concurrent worker slots — Go orchestrator AND
+                                    # Python worker's thread pool both read this,
+                                    # so raising it here scales both sides together.
+                                    # Bounded by available RAM: each slot = 1 full
+                                    # Chrome instance. Tune down if the host swaps.
   max_search_per_proxy: 1          # testing: 1 search per proxy
   new_article_boost: 5             # first week: 5 searches
   regular_max: 3                   # after boost: 3 searches max
@@ -37,7 +47,9 @@ proxy:
   # Legacy single key (backward compat) — akan diabaikan jika webshare_api_keys diisi
   webshare_api_key: ""
   # Multi-key rotation: jika kosong, akan dimuat dari WEBSHARE_API_KEYS di .env
-  webshare_api_keys: []
+  webshare_api_keys:
+    - "4o2y8qp2pijurc2gefxjnsyff53ljmhqnsa6zjg6"
+    - "h5v1f7iv613kg03wvtlbd4os97bnk1b72y983lrj"
   sources: []
   # sources (disabled — hanya pakai Webshare API):
     # GitHub raw lists
@@ -63,7 +75,6 @@ captcha:
   solver: "openai_api"         # "openai_api" (Groq/OpenAI) | "google_web" | "whisper" (local)
   whisper_model: "base"        # "base" (~70MB, cepat) | "small" (~140MB)
   # --- openai_api backend (OpenAI, Groq, atau provider lain yang OpenAI-compatible) ---
-  # Jika openai_api_key kosong, akan otomatis membaca OPENAI_API_KEY dari .env
   openai_api_key: ""
   openai_base_url: "https://api.groq.com/openai/v1"  # kosongkan untuk OpenAI default
   openai_model: "whisper-large-v3-turbo"             # model STT di provider tersebut
@@ -85,6 +96,10 @@ bandwidth:
 article_collection:
   method: sitemap
   refresh_interval_hours: 6
+  max_concurrent_fetches: 4        # was hardcoded to 20 — that many simultaneous
+                                    # requests to your own domain reads as a burst
+                                    # attack to most rate-limiters/WAFs and was
+                                    # causing HTTP 503s on nearly every refresh
 
 telegram:
   enabled: false

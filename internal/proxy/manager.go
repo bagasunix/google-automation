@@ -115,9 +115,16 @@ func (m *Manager) refresh() error {
 	// Persist healthy proxies to the DB and build PooledProxy list.
 	var pooled []PooledProxy
 	for _, r := range results {
-		// If proxy returned 402, force-exhaust the key in bandwidth tracker.
-		if r.BandwidthExhausted && m.pool.BandwidthTracker() != nil {
-			m.pool.BandwidthTracker().ExhaustKey(r.Proxy.APIKeyIndex)
+		if m.pool.BandwidthTracker() != nil {
+			if r.BandwidthExhausted {
+				// Proxy returned 402 — force-exhaust the key.
+				m.pool.BandwidthTracker().ExhaustKey(r.Proxy.APIKeyIndex)
+			} else if r.Healthy {
+				// Proxy passed live (200 OK, not 402) — this key is
+				// currently NOT blocked by Webshare, even if a stale local
+				// record still marks it exhausted from earlier this month.
+				m.pool.BandwidthTracker().ClearExhaustion(r.Proxy.APIKeyIndex)
+			}
 		}
 		sp := &storage.Proxy{
 			IP:        r.Proxy.IP,

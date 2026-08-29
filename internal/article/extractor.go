@@ -49,23 +49,45 @@ func (e *Extractor) Extract(url string) (*ExtractedArticle, error) {
 	return article, nil
 }
 
-// fetchHTML retrieves the raw HTML of a URL.
+// fetchHTML retrieves the raw HTML of a URL. A 503 is treated as a
+// transient rate-limit signal (this fetches the target domain itself, which
+// is exactly the kind of request a WAF/rate-limiter throttles under burst
+// load) and gets a couple of backed-off retries instead of failing outright.
 func (e *Extractor) fetchHTML(url string) (string, error) {
-	resp, err := e.client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	const maxRetries = 2
+	var lastErr error
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+
+		resp, err := e.client.Get(url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return "", fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		return string(body), nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
+	return "", lastErr
 }
 
 // ---------------------------------------------------------------------------

@@ -170,6 +170,29 @@ func (t *Tracker) ExhaustKey(apiKeyIndex int) {
 	log.Printf("[bandwidth] key#%d force-exhausted (402 from Webshare)", apiKeyIndex)
 }
 
+// ClearExhaustion resets a key's tracked usage below the pause threshold when
+// live evidence (a proxy on that key passing its health check with a 200,
+// not a 402) shows Webshare is no longer blocking it. Without this, a key
+// marked exhausted via ExhaustKey stays exhausted in the local tracker for
+// the rest of the calendar month even if Webshare's own limit already
+// recovered (top-up, quota reset, etc.) — wasting bandwidth that is actually
+// available. Only touches the entry if it is currently above the pause
+// threshold, so it never clobbers a legitimately-tracked lower usage value.
+func (t *Tracker) ClearExhaustion(apiKeyIndex int) {
+	t.mu.Lock()
+	k := storageKey(apiKeyIndex)
+	e, ok := t.entries[k]
+	if !ok || !t.pausedLocked(e.UsedKB) {
+		t.mu.Unlock()
+		return
+	}
+	e.UsedKB = 0
+	e.LastUpdated = float64(time.Now().Unix())
+	t.save()
+	t.mu.Unlock()
+	log.Printf("[bandwidth] key#%d exhaustion cleared — proxy passed live health check, bandwidth available again", apiKeyIndex)
+}
+
 // IsKeyAvailable returns false when the key has hit the pause threshold.
 func (t *Tracker) IsKeyAvailable(apiKeyIndex int) bool {
 	_, paused := t.Status(apiKeyIndex)

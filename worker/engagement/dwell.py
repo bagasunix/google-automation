@@ -118,6 +118,10 @@ def simulate_reading(sb, target_domain: str) -> Tuple[int, int]:
         if random.random() < 0.20:
             _simulate_text_selection(sb)
 
+        # 15% chance: UX interactions (hover social share buttons / TOC)
+        if random.random() < 0.15:
+            _simulate_ux_interactions(sb)
+
         # 15% chance: scroll back up (re-reading paragraph)
         if random.random() < 0.15:
             human_scroll(sb, -random.randint(150, 350))
@@ -127,3 +131,22 @@ def simulate_reading(sb, target_domain: str) -> Tuple[int, int]:
     dwell = int(time.time() - start)
     logger.info("Reading done: %ds dwell, %d%% scroll depth", dwell, scroll_depth)
     return dwell, scroll_depth
+
+
+def _simulate_ux_interactions(sb) -> None:
+    """Simulate hovering on social share buttons, Table of Contents, or comment section."""
+    try:
+        sb.execute_script("""
+            const targets = document.querySelectorAll(
+                'a[href*="twitter"], a[href*="facebook"], a[href*="whatsapp"], a[href*="telegram"], ' +
+                '.share-button, .social-share, .toc, nav.toc, #comments, form.comment-form'
+            );
+            if (targets.length > 0) {
+                const el = targets[Math.floor(Math.random() * targets.length)];
+                el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            }
+        """)
+        time.sleep(random.uniform(0.5, 1.5))
+    except Exception:
+        pass

@@ -6,9 +6,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +21,41 @@ import (
 	"google-automation/internal/orchestrator"
 	"google-automation/internal/storage"
 )
+
+// orchestratorPIDFile is the same path every launch method (manual run,
+// scripts/run.sh, systemd, or the dashboard's own spawn) already reads/writes
+// — used here as a single-instance lock so no launch path can accidentally
+// start a second orchestrator fighting the first over the same proxies and
+// DB (exactly what happened before: a stray manual run plus a
+// dashboard-spawned one, both alive at once, neither aware of the other).
+const orchestratorPIDFile = ".orchestrator.pid"
+
+// acquireSingleInstanceLock refuses to start if the PID file names a process
+// that is still alive; otherwise it claims the file for this process.
+func acquireSingleInstanceLock(path string) error {
+	if data, err := os.ReadFile(path); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 && pid != os.Getpid() {
+			if proc, err := os.FindProcess(pid); err == nil {
+				if err := proc.Signal(syscall.Signal(0)); err == nil {
+					return fmt.Errorf("another orchestrator instance is already running (PID %d) — refusing to start a duplicate. Stop it first (kill %d, or ./scripts/stop.sh) if this is stale", pid, pid)
+				}
+			}
+		}
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0644)
+}
+
+// releaseSingleInstanceLock removes the PID file, but only if it still names
+// this process — avoids clobbering a newer instance's lock in a shutdown race.
+func releaseSingleInstanceLock(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid == os.Getpid() {
+		_ = os.Remove(path)
+	}
+}
 
 func main() {
 	configPath := flag.String("config", "config/config.yaml", "path to config.yaml")
@@ -30,6 +69,15 @@ func main() {
 	log.Println("║  Search Automation — Go Orchestrator     ║")
 	log.Println("║  Proxy + Humanized Search SEO Engine     ║")
 	log.Println("╚══════════════════════════════════════════╝")
+
+	// 0. Refuse to start alongside another live instance, regardless of how
+	// either one was launched (manual, scripts/run.sh, systemd, dashboard).
+	baseDir, _ := os.Getwd()
+	pidPath := filepath.Join(baseDir, orchestratorPIDFile)
+	if err := acquireSingleInstanceLock(pidPath); err != nil {
+		log.Fatalf("%v", err)
+	}
+	defer releaseSingleInstanceLock(pidPath)
 
 	// 1. Load configuration.
 	cfg, err := config.Load(*configPath)

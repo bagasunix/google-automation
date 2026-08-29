@@ -123,17 +123,20 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 
 	now := time.Now()
 
-	// Scan for the first proxy whose API key still has bandwidth and is not quarantined.
-	for i := 0; i < len(p.available); i++ {
-		px := p.available[i]
+	// Scan for the first proxy whose API key still has bandwidth and is not
+	// quarantined. Always inspect the front and rotate skipped ones to the
+	// back — bounded by the original count (checked), not by len(p.available),
+	// which stays constant across rotations and would otherwise never let
+	// this terminate when every proxy is currently unusable.
+	total := len(p.available)
+	for checked := 0; checked < total; checked++ {
+		px := p.available[0]
 
 		// Check quarantine
 		if until, q := p.quarantined[px.ID]; q {
 			if now.Before(until) {
 				// Still in quarantine — rotate to back
-				p.available = append(p.available[:i], p.available[i+1:]...)
-				p.available = append(p.available, px)
-				i--
+				p.available = append(p.available[1:], px)
 				continue
 			}
 			// Quarantine expired — remove
@@ -142,14 +145,12 @@ func (p *Pool) Acquire() (PooledProxy, bool) {
 
 		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
 			// Key exhausted — rotate this proxy to the back and keep scanning.
-			p.available = append(p.available[:i], p.available[i+1:]...)
-			p.available = append(p.available, px)
-			i-- // re-check the shifted element
+			p.available = append(p.available[1:], px)
 			continue
 		}
 
 		// Usable proxy found — pop it from available.
-		p.available = append(p.available[:i], p.available[i+1:]...)
+		p.available = p.available[1:]
 		p.usedThisCycle = append(p.usedThisCycle, px)
 		return px, true
 	}
@@ -250,6 +251,26 @@ func (p *Pool) TotalCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.available) + len(p.usedThisCycle)
+}
+
+// HasUsableProxy reports whether at least one proxy in the available pool is
+// currently neither quarantined nor bandwidth-exhausted, without acquiring
+// it. Read-only — used to detect a fully-exhausted pool for alerting.
+func (p *Pool) HasUsableProxy() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	for _, px := range p.available {
+		if until, q := p.quarantined[px.ID]; q && now.Before(until) {
+			continue
+		}
+		if p.bwTracker != nil && !p.bwTracker.IsKeyAvailable(px.APIKeyIndex) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // ResetCycle moves all used proxies back to available for a new cycle.

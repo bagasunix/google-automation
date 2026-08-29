@@ -395,7 +395,43 @@ def _browse_serp_casually(sb, engine: str, target_domain: str,
 # gRPC server
 # ---------------------------------------------------------------------------
 
-_executor = ThreadPoolExecutor(max_workers=4)
+def _resolve_max_workers(cli_value: int | None) -> int:
+    """Decide the thread pool size: --max-workers flag > WORKER_MAX_CONCURRENT
+    env var > config.yaml's scheduler.concurrency (kept in sync with the Go
+    orchestrator's own worker-slot count) > default of 4.
+
+    Without this, the Go side could be configured for e.g. 8 concurrent
+    worker slots while this pool silently capped real parallelism at 4 —
+    slots 5-8 would just queue for a free thread, no extra throughput, no
+    indication anything was wrong.
+    """
+    if cli_value is not None:
+        return max(1, min(cli_value, 10))
+
+    env_value = os.environ.get("WORKER_MAX_CONCURRENT")
+    if env_value:
+        try:
+            return max(1, min(int(env_value), 10))
+        except ValueError:
+            logger.warning("WORKER_MAX_CONCURRENT=%r is not an integer, ignoring", env_value)
+
+    for candidate in ["config/config.yaml", "../config/config.yaml"]:
+        if os.path.isfile(candidate):
+            try:
+                import yaml
+                with open(candidate, "r") as f:
+                    cfg = yaml.safe_load(f) or {}
+                concurrency = cfg.get("scheduler", {}).get("concurrency")
+                if isinstance(concurrency, int) and concurrency > 0:
+                    return max(1, min(concurrency, 10))
+            except Exception as e:
+                logger.warning("Could not read concurrency from %s: %s", candidate, e)
+            break
+
+    return 4
+
+
+_executor: ThreadPoolExecutor | None = None
 
 
 class WorkerServiceServicer(task_pb2_grpc.WorkerServiceServicer):
@@ -466,14 +502,21 @@ async def run_http_server(port: int) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    global _ARGS
+    global _ARGS, _executor
 
     parser = argparse.ArgumentParser(description="Search automation worker")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--http", action="store_true", help="Run HTTP fallback server")
     parser.add_argument("--headed", action="store_true", help="Run browser headed (debug)")
     parser.add_argument("--no-cooldown", action="store_true", help="Skip post-exit cooldown")
+    parser.add_argument("--max-workers", type=int, default=None,
+                         help="Max concurrent browser sessions (default: config.yaml's "
+                              "scheduler.concurrency, kept in sync with the Go orchestrator)")
     _ARGS = parser.parse_args()
+
+    max_workers = _resolve_max_workers(_ARGS.max_workers)
+    _executor = ThreadPoolExecutor(max_workers=max_workers)
+    logger.info("Task executor: max %d concurrent browser sessions", max_workers)
 
     if _ARGS.http:
         logger.info("Starting HTTP fallback server on port %d", _ARGS.port)

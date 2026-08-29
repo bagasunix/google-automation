@@ -215,11 +215,16 @@ Untuk menghentikan:
 ./scripts/stop.sh
 ```
 
-### B. Menjalankan Live Web Dashboard
+### B. Menjalankan Live Web Control Panel (Dashboard v3)
 ```bash
 ./bin/dashboard --serve :8080
 ```
-Buka di browser: `http://<IP_VPS_ANDA>:8080` untuk melihat status, grafik tren performa **Chart.js**, dan tombol unduh **📥 Export CSV Report**.
+Buka di browser: `http://<IP_VPS_ANDA>:8080` untuk mengakses **Web Admin Suite**:
+* **🤖 Bot Fleet Grid & Live Terminal**: Memantau worker paralel secara live (`Worker #1`..`#N`), mengatur jumlah browser yang aktif (*concurrency scaling*), dan membaca streaming log real-time dengan filter worker tanpa perlu buka SSH.
+* **📊 Analytics & Trends**: Grafik garis interaktif **Chart.js** pergerakan ranking dan tombol unduh **📥 Export CSV Report**.
+* **🌐 Articles & SERP**: Memantau posisi ranking setiap artikel dan memicu pencarian instan dengan tombol **⚡ Cari Sekarang**.
+* **🛡️ Proxy Hub**: Memantau status alokasi proxy aktif, latensi, dan status karantina.
+* **⚙️ Settings Editor**: Mengubah pengaturan `config.yaml` dan `.env` langsung dari web browser dan menerapkan perubahan secara *live hot-reload*.
 
 ### C. Menjalankan 24/7 via Systemd di VPS
 ```bash
@@ -267,6 +272,11 @@ sudo journalctl -u google-automation -f
 - **Auto-Quarantine**: Karantina otomatis 4 jam jika proxy memicu CAPTCHA, dan 2 jam jika mengalami 3x network error berturut-turut.
 - **Time-of-Day Awareness**: Pencarian hanya berjalan pada jam aktif pengguna (07:00–23:00) sesuai zona waktu lokal IP proxy.
 - **Per-Engine Auto Fallback**: Jika Google memicu jeda CAPTCHA, pencarian otomatis dialihkan ke Bing/Direct/Social tanpa menghentikan bot.
+
+### 5. Algoritma Deep SEO & Algorithmic Boosters
+- **Google Autocomplete Hijacker**: Mengetik kata kunci bertahap, menunggu dropdown saran pencarian Google (*Google Suggest*), lalu mengaitkannya dengan brand `bagasunix` untuk menanam nama web di autocomplete publik.
+- **People Also Ask (PAA) Explorer**: Membuka dan membaca accordion tanya-jawab di Google SERP sebelum mengklik web target guna memperkuat sinyal riset intent mendalam (*deep research intent*).
+- **UX Engagement & Social Share Simulator**: Simulasi interaksi pengguna tingkat lanjut (*hover* tombol share Twitter/FB/WA, fokus form komentar, dan klik navigasi daftar isi).
 
 ---
 

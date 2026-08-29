@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     avg_serp_position REAL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_proxies_ip_port ON proxies(ip, port);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_proxies_ip_port_user ON proxies(ip, port, username);
 CREATE INDEX IF NOT EXISTS idx_proxies_active ON proxies(active, blacklisted);
 CREATE INDEX IF NOT EXISTS idx_articles_searched ON articles(searched_count, last_searched_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);

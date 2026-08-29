@@ -316,15 +316,23 @@ def _transcribe_openai_api(wav_path: str) -> Optional[str]:
     if base_url:
         client_kwargs["base_url"] = base_url
 
+    language = cfg.get("language", "en")
+    temp = float(cfg.get("temperature", 0.0))
+
     try:
         client = OpenAI(**client_kwargs)
         with open(wav_path, "rb") as f:
-            result = client.audio.transcriptions.create(
-                model=model,
-                file=f,
-                response_format="text",
-                language="en",
-            )
+            kwargs = {
+                "model": model,
+                "file": f,
+                "response_format": "text",
+                "language": language,
+                "temperature": temp,
+            }
+            prompt = cfg.get("prompt")
+            if prompt:
+                kwargs["prompt"] = prompt
+            result = client.audio.transcriptions.create(**kwargs)
         return result.strip() if isinstance(result, str) else result.text.strip()
     except Exception as e:
         logger.error("OpenAI API transcription error: %s", e)

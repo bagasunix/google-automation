@@ -46,13 +46,57 @@ def _is_doscaptcha(sb) -> bool:
 def _click_checkbox(sb) -> bool:
     try:
         sb.switch_to_default_content()
+        sb.wait_for_element_visible(ANCHOR_IFRAME, timeout=10)
         sb.switch_to_frame(ANCHOR_IFRAME)
+        
+        # Simulate human straight-line cursor movement (tarik garis lurus)
+        sb.execute_script("""
+            const el = document.querySelector('.recaptcha-checkbox, #recaptcha-anchor');
+            if (!el) return;
+            
+            const rect = el.getBoundingClientRect();
+            const targetX = rect.x + rect.width / 2;
+            const targetY = rect.y + rect.height / 2;
+            
+            // Start from somewhere on the left side
+            let startX = 0;
+            let startY = rect.y;
+            
+            const steps = 25;
+            const dx = (targetX - startX) / steps;
+            const dy = (targetY - startY) / steps;
+            
+            let i = 0;
+            function step() {
+                if (i > steps) return;
+                startX += dx;
+                startY += dy;
+                
+                // Add a very slight random offset to simulate hand micro-tremor, but still straight
+                const wobbleX = (Math.random() - 0.5) * 1.5;
+                const wobbleY = (Math.random() - 0.5) * 1.5;
+                
+                document.dispatchEvent(new MouseEvent('mousemove', {
+                    clientX: startX + wobbleX,
+                    clientY: startY + wobbleY,
+                    bubbles: true,
+                    cancelable: true
+                }));
+                
+                i++;
+                // Random interval between 15ms and 35ms per step
+                setTimeout(step, 15 + Math.random() * 20);
+            }
+            step();
+        """)
+        
+        time.sleep(1.0) # Wait for mouse movement animation to finish
         sb.click(".recaptcha-checkbox, #recaptcha-anchor")
         sb.switch_to_default_content()
-        time.sleep(2)
+        time.sleep(2.5) # Wait for visual challenge to pop up
         return True
     except Exception as e:
-        logger.debug("checkbox click failed: %s", e)
+        logger.exception("checkbox click failed: %s", e)
         try:
             sb.switch_to_default_content()
         except Exception:
@@ -181,7 +225,10 @@ def solve_sorry_audio(sb, max_attempts: int = 3) -> bool:
     for attempt in range(1, max_attempts + 1):
         logger.info("audio_sorry attempt %d/%d", attempt, max_attempts)
 
-        sb.switch_to_default_content()
+        try:
+            sb.switch_to_default_content()
+        except Exception:
+            pass
 
         if not _click_checkbox(sb):
             logger.warning("could not click checkbox on attempt %d", attempt)
@@ -197,19 +244,28 @@ def solve_sorry_audio(sb, max_attempts: int = 3) -> bool:
 
         if not _click_audio_button(sb):
             logger.warning("could not click audio button or DosCaptcha active on attempt %d", attempt)
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             continue
 
         # Check for DosCaptcha block after audio click
         if _is_doscaptcha(sb):
             logger.warning("Google blocked audio challenge for this IP (DosCaptcha 'automated queries') — skipping audio attempts")
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             return False
 
         audio_src = _get_audio_src(sb)
         if not audio_src:
             logger.warning("no audio src found on attempt %d", attempt)
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             continue
 
         logger.info("found audio challenge URL: %s", audio_src[:90])
@@ -217,23 +273,35 @@ def solve_sorry_audio(sb, max_attempts: int = 3) -> bool:
         audio_bytes = _download_audio(sb, audio_src)
         if not audio_bytes:
             logger.warning("audio download failed on attempt %d", attempt)
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             continue
 
         answer = transcribe_audio(audio_bytes)
         if not answer:
             logger.warning("transcription returned empty on attempt %d", attempt)
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             continue
 
         logger.info("submitting transcription: '%s'", answer)
 
         if not _submit_answer(sb, answer):
             logger.warning("submit answer failed on attempt %d", attempt)
-            sb.switch_to_default_content()
+            try:
+                sb.switch_to_default_content()
+            except Exception:
+                pass
             continue
 
-        sb.switch_to_default_content()
+        try:
+            sb.switch_to_default_content()
+        except Exception:
+            pass
 
         # Wait up to 8s for redirect away from /sorry/
         for _ in range(8):

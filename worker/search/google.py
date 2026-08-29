@@ -106,8 +106,18 @@ def perform_google_search(sb, query: str) -> bool | str:
         logger.error("Google search input not found")
         return False
 
-    type_humanized(sb, matched_selector, query)
-    time.sleep(random.uniform(0.5, 1.5))
+    # Autocomplete Suggestion Hijack simulation (35% chance)
+    if random.random() < 0.35 and len(query) > 10:
+        logger.info("Triggering Google Autocomplete Suggestion brand association flow")
+        half_idx = max(5, int(len(query) * 0.6))
+        type_humanized(sb, matched_selector, query[:half_idx])
+        time.sleep(random.uniform(1.2, 2.5))
+        # Complete remaining query with brand association
+        type_humanized(sb, matched_selector, query[half_idx:])
+        time.sleep(random.uniform(0.8, 1.8))
+    else:
+        type_humanized(sb, matched_selector, query)
+        time.sleep(random.uniform(0.5, 1.5))
 
     # Try clicking the Google Search button first — more reliable than Enter in UC mode
     submitted = False
@@ -208,13 +218,32 @@ def google_search_flow(sb, query: str, target_domain: str) -> SerpSearchOutcome:
             random_pause(2, 4)
 
         human_scroll(sb, random.randint(300, 600))
-        random_pause(2, 5)
+        random_pause(1, 2)
 
-        return find_target_in_serp(sb, target_domain, engine="google")
+        # 30% chance: explore People Also Ask (PAA) accordion
+        if random.random() < 0.30:
+            _explore_paa_questions(sb)
+
+        return find_target_in_serp(sb, target_domain, engine="google", max_pages=3)
 
     except Exception as e:
-        logger.error("Google search flow error: %s", e, exc_info=True)
+        logger.error("google_search_flow error: %s", e, exc_info=True)
         return SerpSearchOutcome(error=str(e))
+
+
+def _explore_paa_questions(sb) -> None:
+    """Explore People Also Ask (PAA) accordions on SERP to simulate deep research intent."""
+    try:
+        paa_elements = sb.find_elements("div.related-question-pair, div[jsname='N7M08b'], div.cbphWd")
+        if paa_elements and len(paa_elements) > 0:
+            logger.info("Found %d People Also Ask (PAA) questions on SERP — exploring...", len(paa_elements))
+            q = paa_elements[0]
+            human_click_element(sb, q)
+            time.sleep(random.uniform(2.5, 4.5))
+            human_click_element(sb, q)
+            time.sleep(random.uniform(0.8, 1.5))
+    except Exception as e:
+        logger.debug("PAA exploration skipped/error: %s", e)
 
 
 def google_click_target(sb, target_result: SerpResult, competitor_click_chance: float = 0.0) -> None:

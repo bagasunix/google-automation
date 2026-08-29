@@ -38,6 +38,7 @@ type EngineRatio struct {
 
 // SchedulerConfig holds all scheduler-related tuning knobs.
 type SchedulerConfig struct {
+	Concurrency              int     `yaml:"concurrency"`            // number of concurrent workers (1-10)
 	MaxSearchPerProxy        int     `yaml:"max_search_per_proxy"`
 	NewArticleBoost         int     `yaml:"new_article_boost"`
 	RegularMax              int     `yaml:"regular_max"`
@@ -84,6 +85,7 @@ type GRPCConfig struct {
 type ArticleCollection struct {
 	Method               string `yaml:"method"`
 	RefreshIntervalHours int    `yaml:"refresh_interval_hours"`
+	MaxConcurrentFetches int    `yaml:"max_concurrent_fetches"`
 }
 
 // BandwidthConfig configures proxy bandwidth tracking and conservation.
@@ -209,6 +211,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ArticleCollection.RefreshIntervalHours == 0 {
 		c.ArticleCollection.RefreshIntervalHours = 6
+	}
+	if c.ArticleCollection.MaxConcurrentFetches == 0 {
+		c.ArticleCollection.MaxConcurrentFetches = 4
 	}
 	if c.Bandwidth.MonthlyLimitMB == 0 {
 		c.Bandwidth.MonthlyLimitMB = 1024

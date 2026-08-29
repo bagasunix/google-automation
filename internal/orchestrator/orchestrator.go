@@ -109,7 +109,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	go o.proxyMgr.StartRefreshLoop()
 
 	log.Println("[orchestrator] initial article collection…")
-	if err := o.articleQ.RefreshArticles(o.cfg.Domains); err != nil {
+	if err := o.articleQ.RefreshArticles(o.cfg.Domains, o.cfg.ArticleCollection.MaxConcurrentFetches); err != nil {
 		log.Printf("[orchestrator] article refresh failed: %v (continuing with cached articles)", err)
 		if err := o.articleQ.LoadFromDB(); err != nil {
 			return fmt.Errorf("load articles from DB: %w", err)
@@ -148,109 +148,204 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		log.Println("[orchestrator] telegram command listener started")
 	}
 
-	// --- Main loop ---
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		if !o.running {
-			break
-		}
-
-		select {
-		case <-ctx.Done():
-			log.Println("[orchestrator] context cancelled — stopping")
-			return nil
-		case <-o.stopCh:
-			log.Println("[orchestrator] stop signal received")
-			return nil
-		case <-ticker.C:
-			o.runOneCycle(ctx)
-		}
+	// Initialize FleetManager
+	concurrency := o.cfg.Scheduler.Concurrency
+	if concurrency <= 0 {
+		concurrency = 2
 	}
+	fm := GetFleetManager(concurrency)
+	log.Printf("[orchestrator] Fleet Manager initialized with %d workers", concurrency)
+	fm.Log(0, "SYSTEM", "INFO", fmt.Sprintf("Orchestrator started with %d workers", concurrency))
+
+	go o.fleetControlPollLoop(fm)
+	go o.proxyExhaustionAlertLoop(fm)
+
+	// Launch concurrent worker loops
+	var wg sync.WaitGroup
+	for i := 1; i <= 10; i++ {
+		slotID := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runWorkerLoop(ctx, slotID, fm)
+		}()
+	}
+
+	<-ctx.Done()
+	log.Println("[orchestrator] context cancelled — stopping fleet")
+	wg.Wait()
 	return nil
 }
 
-// runOneCycle executes a single task attempt: check eligibility, acquire proxy,
-// pick article, send gRPC task, record result, apply cooldown.
-// The context allows interruption during sleep/cooldown phases.
-func (o *Orchestrator) runOneCycle(ctx context.Context) {
-	// Auto-reset cycle when all proxies have been used but none are blacklisted.
+// runWorkerLoop handles task execution for an individual worker slot.
+func (o *Orchestrator) runWorkerLoop(ctx context.Context, slotID int, fm *FleetManager) {
+	for {
+		if !o.running {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-o.stopCh:
+			return
+		default:
+		}
+
+		// Check if this slot is active under current concurrency setting
+		if slotID > fm.GetConcurrency() {
+			fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+				w.Status = "IDLE"
+				w.CurrentAction = "Inactive Slot"
+				w.ProgressPercent = 0
+			})
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+				continue
+			}
+		}
+
+		o.runOneSlotCycle(ctx, slotID, fm)
+	}
+}
+
+// runOneSlotCycle executes a single cycle for slotID.
+func (o *Orchestrator) runOneSlotCycle(ctx context.Context, slotID int, fm *FleetManager) {
 	if o.pool.AvailableCount() == 0 && o.pool.TotalCount() > 0 {
-		log.Printf("[orchestrator] pool exhausted — resetting cycle (all %d proxies requeued)", o.pool.TotalCount())
 		o.pool.ResetCycle()
 	}
-	log.Printf("[orchestrator] cycle tick — pool available=%d", o.pool.AvailableCount())
-	// 1. Should we run right now?
+
 	ok, reason := o.scheduler.ShouldRun()
 	if !ok {
-		log.Printf("[orchestrator] waiting: %s", reason)
-		return
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "COOLDOWN"
+			w.CurrentAction = reason
+			w.ProgressPercent = 0
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			return
+		}
 	}
-	log.Printf("[orchestrator] step1 ok, acquiring proxy...")
 
-	// 2. Acquire a proxy within active hours.
 	px, found := o.scheduler.AcquireUsableProxy()
 	if !found {
-		// All proxies outside active hours — sleep until earliest 7am.
 		wait := o.scheduler.SleepUntilEarliestActiveHour()
-		log.Printf("[orchestrator] all proxies outside active hours — sleeping %v",
-			wait.Round(time.Minute))
+		action := fmt.Sprintf("Outside Active Hours (%v remaining)", wait.Round(time.Minute))
+		if wait < 5*time.Second {
+			// AcquireUsableProxy can also fail while every proxy is within
+			// active hours but bandwidth-exhausted or quarantined — in that
+			// case SleepUntilEarliestActiveHour reports ~0 remaining, which
+			// would otherwise cause a rapid retry loop instead of a real
+			// backoff.
+			wait = 5 * time.Second
+			action = "No usable proxy available (bandwidth exhausted or quarantined) — retrying"
+		}
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "COOLDOWN"
+			w.CurrentAction = action
+		})
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
-		}
-		return
-	}
-	log.Printf("[orchestrator] step2 ok, proxy=%s:%d, picking article...", px.IP, px.Port)
-
-	// 3. Pick a random eligible article with a random search method.
-	selected, ok := o.articleQ.PickRandom(&o.cfg.Scheduler)
-	if !ok {
-		log.Println("[orchestrator] no eligible articles — waiting for article refresh")
-		o.pool.Release(px)
-		return
-	}
-	log.Printf("[orchestrator] step3 ok, article=%q, checking spread...", selected.Article.Title)
-
-	// 4. Spread check: don't search the same article twice in one day.
-	if !o.spread.IsSpreadOK(selected.Article.ID) {
-		log.Printf("[orchestrator] article %d already searched today — skipping",
-			selected.Article.ID)
-		o.pool.Release(px)
-		return
-	}
-
-	// 5. Domain rate limit: cap searches per domain per day (0 = unlimited).
-	if limit := o.cfg.Scheduler.MaxSearchesPerDomainPerDay; limit > 0 {
-		count, err := o.db.TodayTaskCountByDomain(selected.Article.Domain)
-		if err == nil && count >= limit {
-			log.Printf("[orchestrator] domain %s hit daily limit (%d/%d) — skipping",
-				selected.Article.Domain, count, limit)
-			o.pool.Release(px)
 			return
 		}
 	}
-	log.Printf("[orchestrator] step4 ok, creating task...")
+
+	// Pick article: check manual queue first
+	var selected *article.SelectedArticle
+	if manualID, ok := fm.PopManualArticle(); ok {
+		if art, err := o.db.ArticleByID(manualID); err == nil && art != nil {
+			selected = &article.SelectedArticle{
+				Article:      *art,
+				SearchMethod: article.MethodExactTitle,
+				Query:        art.Title,
+			}
+		}
+	}
+
+	if selected == nil {
+		var ok bool
+		selected, ok = o.articleQ.PickRandom(&o.cfg.Scheduler)
+		if !ok {
+			o.pool.Release(px)
+			fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+				w.Status = "IDLE"
+				w.CurrentAction = "Waiting for articles"
+			})
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+				return
+			}
+		}
+	}
+
+	if !o.spread.IsSpreadOK(selected.Article.ID) {
+		o.pool.Release(px)
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "IDLE"
+			w.CurrentAction = fmt.Sprintf("Article %d already searched today, retrying pick", selected.Article.ID)
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
+			return
+		}
+	}
+
 	engine := o.scheduler.PickEngineAvailable()
 	if engine == "" {
-		log.Printf("[orchestrator] all engines paused — releasing proxy and waiting")
 		o.pool.Release(px)
-		return
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "COOLDOWN"
+			w.CurrentAction = "No traffic engine available (all paused or ratio 0)"
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			return
+		}
 	}
 
-	// 6. Create a task record in the DB.
 	taskID, err := o.db.CreateTask(selected.Article.ID, px.ID, engine)
 	if err != nil {
-		log.Printf("[orchestrator] failed to create task: %v", err)
 		o.pool.Release(px)
-		return
+		log.Printf("[orchestrator] slot %d: create task failed: %v", slotID, err)
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "IDLE"
+			w.CurrentAction = fmt.Sprintf("Task creation failed: %v", err)
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+			return
+		}
 	}
 
-	// 7. Build the gRPC request.
 	taskIDStr := fmt.Sprintf("%d", taskID)
 	preSearchQueries := o.articleQ.GeneratePreSearchQueries(selected.Article)
+
+	fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+		w.Status = "SEARCHING"
+		w.ProxyIP = px.IP
+		w.ProxyPort = px.Port
+		w.ProxyCountry = px.Country
+		w.Engine = engine
+		w.ArticleTitle = selected.Article.Title
+		w.ArticleURL = selected.Article.URL
+		w.CurrentAction = fmt.Sprintf("Searching %s via %s", engine, px.Country)
+		w.ProgressPercent = 25
+	})
+	fm.Log(slotID, px.Country, "TASK", fmt.Sprintf("Target: %q (%s)", selected.Article.Title, engine))
 
 	req := &pb.TaskRequest{
 		TaskId:                  taskIDStr,
@@ -274,65 +369,50 @@ func (o *Orchestrator) runOneCycle(ctx context.Context) {
 		SerpDwellSecondsMax:    int32(o.cfg.Scheduler.SerpDwellSecondsMax),
 	}
 
-	log.Printf("[orchestrator] task %s: article=%q method=%s engine=%s proxy=%s:%d (%s)",
-		taskIDStr, selected.Article.Title, selected.SearchMethod, engine,
-		px.IP, px.Port, px.Country)
+	fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+		w.Status = "READING"
+		w.CurrentAction = "Simulating Reading & Heatmaps"
+		w.ProgressPercent = 65
+	})
 
-	// 8. Send task to Python worker via gRPC.
 	resp, err := o.grpc.ExecuteTask(req)
-
-	// 9. Mark proxy as used (STRICT 1-proxy-1-search — already acquired).
 	_ = o.db.MarkProxyUsed(px.ID)
-
-	// 10. Process the result.
 	o.processResult(taskID, selected.Article.ID, resp, err)
 
-	// 10b. Record bandwidth used (if Python reported it).
 	if resp != nil && resp.BandwidthUsedKb > 0 {
 		o.bwTracker.RecordUsage(px.APIKeyIndex, float64(resp.BandwidthUsedKb))
 	} else if err != nil {
-		// gRPC error — proxy may have burned some bandwidth before failing.
-		// Estimate ~1MB to avoid undercounting.
 		o.bwTracker.RecordUsage(px.APIKeyIndex, 1024)
 	}
 
-	// 11. Check CAPTCHA rate, update proxy health score, and pause if needed.
 	if resp != nil && resp.CaptchaHit {
-		// Per-engine pause — Google CAPTCHA doesn't stop Bing
+		fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+			w.Status = "SOLVING"
+			w.CurrentAction = "CAPTCHA Hit"
+		})
+		fm.Log(slotID, px.Country, "WARN", "CAPTCHA hit on "+engine)
 		o.scheduler.TriggerEnginePause(engine)
 		o.pool.RecordFailure(px, true, resp.Error)
 	} else if err != nil {
+		fm.Log(slotID, px.Country, "ERROR", err.Error())
 		o.pool.RecordFailure(px, false, err.Error())
 	} else if resp != nil && resp.Success {
+		fm.Log(slotID, px.Country, "SUCCESS", fmt.Sprintf("Completed dwell=%ds serp=%d", resp.DwellTimeSeconds, resp.SerpPosition))
 		o.pool.RecordSuccess(px)
 	}
 
-	if o.scheduler.CheckCaptchaRate() {
-		// Aggregate CAPTCHA rate exceeded — global pause
-	}
-
-	// 12. Record task end for cooldown tracking.
 	success := err == nil && resp != nil && resp.Success
 	o.cooldown.RecordTaskEnd(success)
+	_ = o.db.UpdateDailyStats()
 
-	// 13. Update daily stats.
-	if err := o.db.UpdateDailyStats(); err != nil {
-		log.Printf("[orchestrator] failed to update daily stats: %v", err)
-	}
-
-	// 14. Post-exit cooldown (simulate human attention shift).
-	//     Context-aware: can be interrupted during cooldown.
-	postExit := o.cooldown.PostExitCooldown()
-	log.Printf("[orchestrator] post-exit cooldown: %v", postExit)
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(postExit):
-	}
-
-	// 15. Inter-task cooldown (also context-aware).
+	// Cooldown
 	cooldown := o.cooldown.InterTaskCooldown()
-	log.Printf("[orchestrator] inter-task cooldown: %v", cooldown)
+	fm.UpdateWorkerState(slotID, func(w *WorkerState) {
+		w.Status = "COOLDOWN"
+		w.CurrentAction = fmt.Sprintf("Resting for %v", cooldown.Round(time.Second))
+		w.ProgressPercent = 100
+	})
+
 	select {
 	case <-ctx.Done():
 		return
@@ -377,6 +457,81 @@ func (o *Orchestrator) processResult(taskID int64, articleID int64, resp *pb.Tas
 		taskID, status, resp.DwellTimeSeconds, resp.SerpPosition, resp.CaptchaHit)
 }
 
+// fleetControlPollLoop applies concurrency changes requested via the
+// dashboard's +/- control (see FleetControl / WriteFleetControl). The
+// dashboard runs in a different OS process and can only write its request to
+// disk, so this process must poll for it and apply it to its own
+// FleetManager — the one that actually gates active worker slots.
+func (o *Orchestrator) fleetControlPollLoop(fm *FleetManager) {
+	baseDir, _ := os.Getwd()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	var lastApplied time.Time
+	for {
+		select {
+		case <-o.stopCh:
+			return
+		case <-ticker.C:
+			ctrl, err := ReadFleetControl(baseDir)
+			if err != nil || ctrl == nil {
+				continue
+			}
+			if ctrl.RequestedAt.After(lastApplied) && ctrl.Concurrency != fm.GetConcurrency() {
+				fm.SetConcurrency(ctrl.Concurrency)
+				log.Printf("[orchestrator] concurrency changed to %d via dashboard control", ctrl.Concurrency)
+				lastApplied = ctrl.RequestedAt
+			}
+		}
+	}
+}
+
+// proxyExhaustionAlertLoop watches for the whole proxy pool becoming
+// unusable (every proxy bandwidth-exhausted or quarantined) and fires one
+// alert when it happens, then one recovery notice when it clears — instead
+// of the silence that let today's exhaustion go unnoticed for hours. Always
+// logs to the dashboard's terminal feed; also pushes to Telegram when
+// configured.
+func (o *Orchestrator) proxyExhaustionAlertLoop(fm *FleetManager) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	alerted := false
+	for {
+		select {
+		case <-o.stopCh:
+			return
+		case <-ticker.C:
+			if o.pool.TotalCount() == 0 {
+				continue // proxies not loaded yet
+			}
+			usable := o.pool.HasUsableProxy()
+			switch {
+			case !usable && !alerted:
+				msg := "⚠️ ALL proxies exhausted (bandwidth limit or quarantine) — fleet is idling with no usable proxy. Check Webshare bandwidth / add more API keys."
+				log.Println("[orchestrator] " + msg)
+				fm.Log(0, "SYSTEM", "ERROR", msg)
+				if o.telegram != nil {
+					if err := o.telegram.Send(msg); err != nil {
+						log.Printf("[orchestrator] telegram alert failed: %v", err)
+					}
+				}
+				alerted = true
+			case usable && alerted:
+				msg := "✅ Proxy pool recovered — usable proxies available again."
+				log.Println("[orchestrator] " + msg)
+				fm.Log(0, "SYSTEM", "SUCCESS", msg)
+				if o.telegram != nil {
+					if err := o.telegram.Send(msg); err != nil {
+						log.Printf("[orchestrator] telegram alert failed: %v", err)
+					}
+				}
+				alerted = false
+			}
+		}
+	}
+}
+
 // articleRefreshLoop periodically re-scrapes the domain for new articles.
 func (o *Orchestrator) articleRefreshLoop() {
 	interval := time.Duration(o.cfg.ArticleCollection.RefreshIntervalHours) * time.Hour
@@ -389,7 +544,7 @@ func (o *Orchestrator) articleRefreshLoop() {
 			return
 		case <-ticker.C:
 			log.Println("[orchestrator] periodic article refresh")
-			if err := o.articleQ.RefreshArticles(o.cfg.Domains); err != nil {
+			if err := o.articleQ.RefreshArticles(o.cfg.Domains, o.cfg.ArticleCollection.MaxConcurrentFetches); err != nil {
 				log.Printf("[orchestrator] article refresh failed: %v", err)
 			}
 		}

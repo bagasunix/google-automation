@@ -88,9 +88,14 @@ func NewQueue(db *storage.DB) *Queue {
 
 // RefreshArticles re-scrapes all configured domains for articles and persists
 // them to the database. This is called on startup and at the configured interval.
-// Extraction is parallelized with a semaphore (max 20 concurrent HTTP fetches).
-func (q *Queue) RefreshArticles(domains []string) error {
-	const maxConcurrent = 20
+// Extraction is parallelized with a semaphore, bounded by maxConcurrent — keep
+// this modest (single digits): these requests hit the target domain itself,
+// and a large burst reads as an attack to most rate-limiters/WAFs (this was
+// hardcoded to 20 and reliably triggered HTTP 503s on nearly every refresh).
+func (q *Queue) RefreshArticles(domains []string, maxConcurrent int) error {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 4
+	}
 
 	for _, domain := range domains {
 		log.Printf("[article-queue] collecting articles for %s", domain)

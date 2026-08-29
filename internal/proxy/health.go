@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -148,65 +149,44 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 	return result
 }
 
-// detectCountry queries ip-api.com for the country of an IP.
-// Returns empty string on failure.
-func detectCountry(ip string) string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	// ip-api.com returns CSV; field index 1 is the country name.
-	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/line/%s", ip))
+type GeoIPResponse struct {
+	Status      string `json:"status"`
+	Country     string `json:"country"`
+	CountryCode string `json:"countryCode"`
+	Timezone    string `json:"timezone"`
+}
+
+// DetectGeoIP queries ip-api.com for the country and timezone of an IP.
+func DetectGeoIP(ip string) (string, string) {
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,timezone", ip))
 	if err != nil {
-		return ""
+		return "", "UTC"
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return "", "UTC"
 	}
 
-	buf := make([]byte, 2048)
-	n, _ := resp.Body.Read(buf)
-	lines := splitCSVLines(string(buf[:n]))
-	if len(lines) > 1 {
-		fields := splitCSVFields(lines[1])
-		if len(fields) >= 2 {
-			return fields[1]
-		}
+	var data GeoIPResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || data.Status != "success" {
+		return "", "UTC"
 	}
-	return ""
+
+	country := data.CountryCode
+	if country == "" {
+		country = data.Country
+	}
+	tz := data.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	return country, tz
 }
 
-// splitCSVLines splits a CSV blob into individual lines.
-func splitCSVLines(s string) []string {
-	var out []string
-	cur := ""
-	for _, ch := range s {
-		if ch == '\n' {
-			out = append(out, cur)
-			cur = ""
-		} else if ch != '\r' {
-			cur += string(ch)
-		}
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
-}
-
-// splitCSVFields splits a single CSV line by commas.
-func splitCSVFields(s string) []string {
-	var out []string
-	cur := ""
-	for _, ch := range s {
-		if ch == ',' {
-			out = append(out, cur)
-			cur = ""
-		} else {
-			cur += string(ch)
-		}
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
+// detectCountry is a backward-compatible wrapper returning the country code/name.
+func detectCountry(ip string) string {
+	c, _ := DetectGeoIP(ip)
+	return c
 }
