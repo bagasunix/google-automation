@@ -232,7 +232,7 @@ async def execute_task(request) -> object:
             raise RuntimeError(error_msg)
 
         if not target_outcome.found:
-            error_msg = f"Target domain '{domain}' not found in SERP for query '{article_title[:50]}'"
+            error_msg = f"Target domain '{domain}' not found in SERP for query '{article_title}'"
             logger.warning(error_msg)
             success = False
             await capture_screenshot(page, task_id, "target_not_found")
@@ -291,13 +291,19 @@ async def execute_task(request) -> object:
         if "CAPTCHA" in error_msg:
             captcha_hit = True
     except Exception as e:
-        error_msg = f"Unexpected error: {type(e).__name__}: {e}"
-        logger.error("Task failed: %s", error_msg, exc_info=True)
-        if session and session._page:
-            try:
-                await capture_screenshot(session._page, task_id, "exception")
-            except Exception:
-                pass
+        err_name = type(e).__name__
+        msg = str(e)
+        if err_name == "TargetClosedError" or "has been closed" in msg:
+            error_msg = "Task interrupted: browser closed mid-task"
+            logger.warning("Task %s interrupted: %s", task_id, err_name)
+        else:
+            error_msg = f"Unexpected error: {err_name}: {e}"
+            logger.error("Task failed: %s", error_msg, exc_info=True)
+            if session and session._page:
+                try:
+                    await capture_screenshot(session._page, task_id, "exception")
+                except Exception:
+                    pass
     finally:
         if session:
             await session.close()
@@ -622,6 +628,12 @@ async def main():
     # Ensure output directories exist
     from reporter import ensure_dirs
     ensure_dirs()
+
+    # Validate CAPTCHA audio backend before accepting any tasks
+    from captcha.audio import validate_backend
+    if not validate_backend():
+        logger.error("CAPTCHA backend validation failed — fix config and restart")
+        raise SystemExit(1)
 
     if args.http or not USE_REAL_GRPC:
         if not USE_REAL_GRPC and not args.http:

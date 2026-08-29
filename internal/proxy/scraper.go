@@ -148,6 +148,16 @@ func (s *Scraper) Scrape() ([]Proxy, error) {
 		for _, p := range r.proxies {
 			key := fmt.Sprintf("%s:%d", p.IP, p.Port)
 			if seen[key] {
+				// Prefer the higher APIKeyIndex — if key#1 has bandwidth and key#0 is exhausted,
+				// we want the proxy assigned to key#1 so it can still be used.
+				for i, existing := range all {
+					if fmt.Sprintf("%s:%d", existing.IP, existing.Port) == key {
+						if p.APIKeyIndex > existing.APIKeyIndex {
+							all[i] = p
+						}
+						break
+					}
+				}
 				continue
 			}
 			seen[key] = true

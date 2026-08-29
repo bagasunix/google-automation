@@ -13,15 +13,17 @@ import (
 // UpsertProxy inserts a proxy or updates it if the (ip, port) pair already exists.
 func (db *DB) UpsertProxy(p *Proxy) (int64, error) {
 	res, err := db.conn.Exec(
-		`INSERT INTO proxies (ip, port, protocol, country, timezone, active, latency_ms)
-		 VALUES (?, ?, ?, ?, ?, 1, ?)
+		`INSERT INTO proxies (ip, port, protocol, country, timezone, username, password, active, latency_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
 		 ON CONFLICT(ip, port) DO UPDATE SET
 		   protocol=excluded.protocol,
 		   country=excluded.country,
 		   timezone=excluded.timezone,
+		   username=excluded.username,
+		   password=excluded.password,
 		   active=1,
 		   latency_ms=excluded.latency_ms`,
-		p.IP, p.Port, p.Protocol, p.Country, p.Timezone, p.LatencyMs,
+		p.IP, p.Port, p.Protocol, p.Country, p.Timezone, p.Username, p.Password, p.LatencyMs,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("upsert proxy %s:%d: %w", p.IP, p.Port, err)
@@ -78,7 +80,7 @@ func (db *DB) ActiveProxyCount() (int, error) {
 // ActiveProxies returns all healthy, non-blacklisted proxies.
 func (db *DB) ActiveProxies() ([]Proxy, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, ip, port, protocol, country, timezone, active, latency_ms,
+		`SELECT id, ip, port, protocol, country, timezone, username, password, active, latency_ms,
 		        used_count, last_used_at, blacklisted, blacklist_reason, created_at
 		 FROM proxies WHERE active = 1 AND blacklisted = 0`,
 	)
@@ -93,7 +95,7 @@ func (db *DB) ActiveProxies() ([]Proxy, error) {
 // AllProxies returns every proxy regardless of state.
 func (db *DB) AllProxies() ([]Proxy, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, ip, port, protocol, country, timezone, active, latency_ms,
+		`SELECT id, ip, port, protocol, country, timezone, username, password, active, latency_ms,
 		        used_count, last_used_at, blacklisted, blacklist_reason, created_at
 		 FROM proxies`,
 	)
@@ -112,6 +114,7 @@ func scanProxies(rows *sql.Rows) ([]Proxy, error) {
 		var active, blacklisted int
 		if err := rows.Scan(
 			&p.ID, &p.IP, &p.Port, &p.Protocol, &p.Country, &p.Timezone,
+			&p.Username, &p.Password,
 			&active, &p.LatencyMs, &p.UsedCount, &p.LastUsedAt,
 			&blacklisted, &p.BlacklistReason, &p.CreatedAt,
 		); err != nil {

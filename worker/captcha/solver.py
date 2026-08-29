@@ -45,6 +45,13 @@ AUDIO_BUTTON_SELECTORS = [
     '.rc-button-audio',
     'button[aria-label*="audio"]',
     'button[aria-label*="Audio"]',
+    'button[aria-label="Get an audio challenge"]',
+    'button[aria-label="get an audio challenge"]',
+    'button[title*="audio"]',
+    'button[title*="Audio"]',
+    '.rc-audiochallenge-play-button',
+    'button.rc-button-audio',
+    '[id*="audio"]',
 ]
 
 AUDIO_RESPONSE_INPUT_SELECTORS = [
@@ -81,6 +88,17 @@ async def solve_recaptcha(page, max_attempts: int = 3) -> bool:
 async def _try_solve(page) -> bool:
     """Single attempt at solving. Returns True if passed."""
     from browser.humanizer import human_click_element, random_pause
+
+    # Wait for reCAPTCHA iframe to appear (sorry page loads it async)
+    try:
+        await page.wait_for_selector(
+            'iframe[src*="recaptcha"]',
+            timeout=15000,
+            state="attached",
+        )
+        await asyncio.sleep(1)
+    except Exception:
+        logger.warning("reCAPTCHA iframe did not appear within 15s")
 
     # Step 1: Find and click the reCAPTCHA checkbox
     anchor_frame = await _find_frame(page, ANCHOR_SELECTORS)
@@ -161,38 +179,126 @@ async def _find_frame(page, selectors: list[str]):
         try:
             element = await page.query_selector(sel)
             if element:
-                frame = element.content_frame()
+                frame = await element.content_frame()
                 if frame:
                     await frame.wait_for_load_state("domcontentloaded", timeout=10000)
                     return frame
         except Exception:
             continue
+
+    # JS fallback: find any iframe with recaptcha in src
+    try:
+        iframes = await page.evaluate("""
+            () => Array.from(document.querySelectorAll('iframe')).map(f => ({
+                src: f.src, title: f.title, id: f.id, name: f.name
+            }))
+        """)
+        logger.warning("All iframe selectors failed. Iframes on page: %s", iframes)
+
+        # Try each iframe directly
+        for iframe_info in iframes:
+            src = iframe_info.get("src", "")
+            if "recaptcha" in src:
+                el = await page.query_selector(f'iframe[src="{src}"]')
+                if not el:
+                    # partial match
+                    all_iframes = await page.query_selector_all("iframe")
+                    for el in all_iframes:
+                        s = await el.get_attribute("src") or ""
+                        if "recaptcha" in s:
+                            frame = await el.content_frame()
+                            if frame:
+                                await frame.wait_for_load_state("domcontentloaded", timeout=10000)
+                                logger.info("Found recaptcha iframe via JS scan: %s", s[:80])
+                                return frame
+    except Exception as e:
+        logger.debug("JS iframe scan failed: %s", e)
+
     return None
 
 
 async def _switch_to_audio(page, bframe) -> bool:
     """Click the audio button in the bframe to switch from image to audio challenge."""
+    # Check if audio challenge already active
+    has_audio = await bframe.evaluate("() => document.querySelector('audio') !== null")
+    if has_audio:
+        logger.info("Audio challenge already active")
+        return True
+
+    # Wait for audio button to become enabled (starts disabled while image challenge loads)
+    try:
+        await bframe.wait_for_function(
+            """() => {
+                const btn = document.querySelector('#recaptcha-audio-button');
+                return btn && !btn.classList.contains('rc-button-disabled');
+            }""",
+            timeout=10000,
+        )
+        logger.info("Audio button is now enabled")
+    except Exception:
+        logger.debug("Timed out waiting for audio button to enable — trying anyway")
+
+    # Try CSS selectors
     for sel in AUDIO_BUTTON_SELECTORS:
         try:
             btn = await bframe.query_selector(sel)
             if btn:
-                await human_click_element(page, btn)
+                # Skip disabled buttons
+                class_attr = await btn.get_attribute("class") or ""
+                if "disabled" in class_attr:
+                    logger.debug("Selector '%s' found but button is disabled, skipping", sel)
+                    continue
+                # Use btn.click() directly — human_click_element uses main page coords
+                # which misses elements inside iframes
+                await btn.click()
                 await asyncio.sleep(2)
-                # Verify audio element appeared
-                has_audio = await bframe.evaluate("""
-                    () => document.querySelector('audio') !== null
-                """)
+                has_audio = await bframe.evaluate("() => document.querySelector('audio') !== null")
                 if has_audio:
-                    logger.info("Switched to audio challenge")
+                    logger.info("Switched to audio challenge via selector: %s", sel)
                     return True
         except Exception as e:
             logger.debug("Audio button selector '%s' failed: %s", sel, e)
             continue
 
-    has_audio = await bframe.evaluate("() => document.querySelector('audio') !== null")
-    if has_audio:
-        logger.info("Audio challenge already active")
-        return True
+    # JS fallback: find any non-disabled button that looks like audio switcher
+    try:
+        clicked = await bframe.evaluate("""
+            () => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    if (btn.classList.contains('rc-button-disabled')) continue;
+                    const label = (btn.getAttribute('aria-label') || btn.textContent || btn.title || '').toLowerCase();
+                    const id = (btn.id || '').toLowerCase();
+                    if (label.includes('audio') || id.includes('audio')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                const el = document.querySelector('[id*="audio"]:not(.rc-button-disabled)');
+                if (el) { el.click(); return true; }
+                return false;
+            }
+        """)
+        if clicked:
+            await asyncio.sleep(2)
+            has_audio = await bframe.evaluate("() => document.querySelector('audio') !== null")
+            if has_audio:
+                logger.info("Switched to audio challenge via JS fallback")
+                return True
+    except Exception as e:
+        logger.debug("JS audio button fallback failed: %s", e)
+
+    # Log all buttons for debugging
+    try:
+        btns = await bframe.evaluate("""
+            () => Array.from(document.querySelectorAll('button')).map(b => ({
+                id: b.id, class: b.className, label: b.getAttribute('aria-label'), text: b.textContent.trim().substring(0, 40)
+            }))
+        """)
+        logger.warning("Audio button not found. Buttons in bframe: %s", btns)
+    except Exception:
+        pass
+
     return False
 
 

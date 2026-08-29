@@ -57,11 +57,18 @@ func NewPool() *Pool {
 }
 
 // SetBandwidthTracker wires the bandwidth tracker so Acquire can skip
-// proxies whose API key has hit the monthly bandwidth pause threshold.
+// proxies whose API key has hit the monthly bandwidth cap.
 func (p *Pool) SetBandwidthTracker(t *bandwidth.Tracker) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.bwTracker = t
+}
+
+// BandwidthTracker returns the wired bandwidth tracker (may be nil).
+func (p *Pool) BandwidthTracker() *bandwidth.Tracker {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bwTracker
 }
 
 // Load replaces the pool contents with a fresh batch of health-checked proxies.

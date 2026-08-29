@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS proxies (
     protocol TEXT DEFAULT 'http',
     country TEXT,
     timezone TEXT,
+    username TEXT DEFAULT '',
+    password TEXT DEFAULT '',
     active INTEGER DEFAULT 1,
     latency_ms INTEGER,
     used_count INTEGER DEFAULT 0,

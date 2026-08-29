@@ -13,6 +13,8 @@ type Proxy struct {
 	Protocol        string
 	Country         string
 	Timezone        string
+	Username        string
+	Password        string
 	Active          bool
 	LatencyMs       int
 	UsedCount       int

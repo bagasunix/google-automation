@@ -158,19 +158,19 @@ func (s *Scheduler) IsEnginePaused(engine string) bool {
 }
 
 // PickEngineAvailable selects an engine based on ratio, but skips engines
-// that are currently paused. Falls back to whichever engine is available.
-// Returns empty string if all engines are paused.
+// that are currently paused or have ratio == 0.
+// Returns empty string if no engine is available.
 func (s *Scheduler) PickEngineAvailable() string {
-	googlePaused := s.IsEnginePaused("google")
-	bingPaused := s.IsEnginePaused("bing")
+	googleOK := !s.IsEnginePaused("google") && s.cfg.EngineRatio.Google > 0
+	bingOK := !s.IsEnginePaused("bing") && s.cfg.EngineRatio.Bing > 0
 
-	if googlePaused && bingPaused {
-		return "" // all paused — let ShouldRun handle it
+	if !googleOK && !bingOK {
+		return ""
 	}
-	if googlePaused {
+	if !googleOK {
 		return "bing"
 	}
-	if bingPaused {
+	if !bingOK {
 		return "google"
 	}
 	// Both available — use configured ratio

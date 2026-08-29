@@ -153,6 +153,23 @@ func (t *Tracker) RecordUsage(apiKeyIndex int, usedKB float64) {
 		used/t.limitKB*100, map[bool]string{true: " — PAUSED", false: ""}[paused])
 }
 
+// ExhaustKey force-marks an API key as exhausted (sets usage to 100% of limit).
+// Called when the proxy returns HTTP 402 — Webshare confirmed the key is out of bandwidth.
+func (t *Tracker) ExhaustKey(apiKeyIndex int) {
+	t.mu.Lock()
+	k := storageKey(apiKeyIndex)
+	e, ok := t.entries[k]
+	if !ok {
+		e = &entry{}
+		t.entries[k] = e
+	}
+	e.UsedKB = t.limitKB // set to 100% so IsKeyAvailable returns false
+	e.LastUpdated = float64(time.Now().Unix())
+	t.save()
+	t.mu.Unlock()
+	log.Printf("[bandwidth] key#%d force-exhausted (402 from Webshare)", apiKeyIndex)
+}
+
 // IsKeyAvailable returns false when the key has hit the pause threshold.
 func (t *Tracker) IsKeyAvailable(apiKeyIndex int) bool {
 	_, paused := t.Status(apiKeyIndex)

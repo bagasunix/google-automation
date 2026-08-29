@@ -98,12 +98,19 @@ func (m *Manager) refresh() error {
 	// Persist healthy proxies to the DB and build PooledProxy list.
 	var pooled []PooledProxy
 	for _, r := range results {
+		// If proxy returned 402, force-exhaust the key in bandwidth tracker.
+		if r.BandwidthExhausted && m.pool.BandwidthTracker() != nil {
+			m.pool.BandwidthTracker().ExhaustKey(r.Proxy.APIKeyIndex)
+		}
 		sp := &storage.Proxy{
-			IP:       r.Proxy.IP,
-			Port:     r.Proxy.Port,
-			Protocol: r.Proxy.Protocol,
-			Country:  r.Country,
-			Active:   true,
+			IP:        r.Proxy.IP,
+			Port:      r.Proxy.Port,
+			Protocol:  r.Proxy.Protocol,
+			Country:   r.Country,
+			Timezone:  timezoneForCountry(r.Country),
+			Username:  r.Proxy.Username,
+			Password:  r.Proxy.Password,
+			Active:    true,
 			LatencyMs: int(r.Latency.Milliseconds()),
 		}
 		id, err := m.db.UpsertProxy(sp)

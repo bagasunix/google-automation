@@ -40,30 +40,22 @@ DEFAULT_WHISPER_MODEL = "large-v3"
 _whisper_model_cache = None
 
 
-def _get_configured_backend() -> str:
-    """Read solver backend from config.yaml captcha.solver."""
+def _load_captcha_config() -> dict:
     try:
         import yaml
         config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
         with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-        captcha_cfg = cfg.get("captcha", {})
-        return captcha_cfg.get("solver", DEFAULT_BACKEND)
+            return yaml.safe_load(f).get("captcha", {})
     except Exception:
-        return DEFAULT_BACKEND
+        return {}
+
+
+def _get_configured_backend() -> str:
+    return _load_captcha_config().get("solver", DEFAULT_BACKEND)
 
 
 def _get_whisper_model_name() -> str:
-    """Read whisper model size from config.yaml captcha.whisper_model."""
-    try:
-        import yaml
-        config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
-        with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-        captcha_cfg = cfg.get("captcha", {})
-        return captcha_cfg.get("whisper_model", DEFAULT_WHISPER_MODEL)
-    except Exception:
-        return DEFAULT_WHISPER_MODEL
+    return _load_captcha_config().get("whisper_model", DEFAULT_WHISPER_MODEL)
 
 
 async def download_audio(frame) -> Optional[bytes]:
@@ -135,6 +127,8 @@ def transcribe_audio(audio_bytes: bytes, backend: str = None) -> Optional[str]:
             raw = _transcribe_whisper(wav_path)
         elif backend == "google_cloud":
             raw = _transcribe_google_cloud(wav_path)
+        elif backend == "openai_api":
+            raw = _transcribe_openai_api(wav_path)
         else:
             raw = _transcribe_google_web(wav_path)
 
@@ -277,8 +271,117 @@ def _transcribe_google_cloud(wav_path: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Backend: OpenAI-compatible API (OpenAI, Groq, custom base_url)
+# ---------------------------------------------------------------------------
+
+def _transcribe_openai_api(wav_path: str) -> Optional[str]:
+    cfg = _load_captcha_config()
+    api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+    base_url = cfg.get("openai_base_url")  # e.g. https://api.groq.com/openai/v1
+    model = cfg.get("openai_model", "whisper-1")
+
+    if not api_key:
+        logger.error("openai_api backend: no api_key in config captcha.openai_api_key or OPENAI_API_KEY env")
+        return None
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger.error("openai package not installed — uv pip install openai")
+        return None
+
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    try:
+        client = OpenAI(**client_kwargs)
+        with open(wav_path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model=model,
+                file=f,
+                response_format="text",
+                language="en",
+            )
+        return result.strip() if isinstance(result, str) else result.text.strip()
+    except Exception as e:
+        logger.error("OpenAI API transcription error: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Text cleaning
 # ---------------------------------------------------------------------------
+
+def validate_backend() -> bool:
+    """
+    Check that the configured STT backend is usable before server starts.
+    Returns True if OK, False if misconfigured (logs the reason).
+    """
+    backend = _get_configured_backend()
+    cfg = _load_captcha_config()
+    logger.info("Validating CAPTCHA audio backend: %s", backend)
+
+    if backend == "whisper":
+        try:
+            import whisper  # noqa: F401
+        except ImportError:
+            logger.error("CAPTCHA backend 'whisper': openai-whisper not installed — run: uv pip install openai-whisper")
+            return False
+        try:
+            import pydub  # noqa: F401
+        except ImportError:
+            logger.error("CAPTCHA backend 'whisper': pydub not installed — run: uv pip install pydub")
+            return False
+        from shutil import which
+        if not which("ffmpeg"):
+            logger.error("CAPTCHA backend 'whisper': ffmpeg not found in PATH")
+            return False
+        logger.info("CAPTCHA backend 'whisper': OK (model=%s)", _get_whisper_model_name())
+        return True
+
+    if backend == "openai_api":
+        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            logger.error(
+                "CAPTCHA backend 'openai_api': no API key — set captcha.openai_api_key in config.yaml "
+                "or export OPENAI_API_KEY"
+            )
+            return False
+        try:
+            from openai import OpenAI  # noqa: F401
+        except ImportError:
+            logger.error("CAPTCHA backend 'openai_api': openai package not installed — run: uv pip install openai")
+            return False
+        base_url = cfg.get("openai_base_url") or "https://api.openai.com/v1"
+        model = cfg.get("openai_model", "whisper-1")
+        logger.info("CAPTCHA backend 'openai_api': OK (base_url=%s, model=%s)", base_url, model)
+        return True
+
+    if backend == "google_cloud":
+        if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            logger.error("CAPTCHA backend 'google_cloud': GOOGLE_APPLICATION_CREDENTIALS env var not set")
+            return False
+        try:
+            import speech_recognition  # noqa: F401
+        except ImportError:
+            logger.error("CAPTCHA backend 'google_cloud': SpeechRecognition not installed — run: uv pip install SpeechRecognition")
+            return False
+        logger.info("CAPTCHA backend 'google_cloud': OK")
+        return True
+
+    if backend == "google_web":
+        try:
+            import speech_recognition  # noqa: F401
+        except ImportError:
+            logger.error("CAPTCHA backend 'google_web': SpeechRecognition not installed — run: uv pip install SpeechRecognition")
+            return False
+        logger.info("CAPTCHA backend 'google_web': OK (note: free tier, may be rate-limited)")
+        return True
+
+    logger.error("CAPTCHA backend '%s': unknown backend — valid options: whisper, openai_api, google_web, google_cloud", backend)
+    return False
+
 
 def _clean_transcription(text: str) -> str:
     """Clean transcription: strip punctuation, convert number words to digits."""

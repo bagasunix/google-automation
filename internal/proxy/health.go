@@ -12,11 +12,12 @@ import (
 
 // HealthResult holds the outcome of a single proxy health check.
 type HealthResult struct {
-	Proxy    Proxy
-	Healthy  bool
-	Latency  time.Duration
-	Country  string
-	IPRemote string // detected external IP through the proxy
+	Proxy               Proxy
+	Healthy             bool
+	BandwidthExhausted  bool
+	Latency             time.Duration
+	Country             string
+	IPRemote            string // detected external IP through the proxy
 }
 
 // Checker health-checks proxies in parallel using Go concurrency.
@@ -120,15 +121,27 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 		if err != nil {
 			continue
 		}
+		resp.Body.Close()
+
 		if resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
 			result.Latency = time.Since(start)
 			result.Healthy = true
 			result.Country = detectCountry(p.IP)
 			result.IPRemote = p.IP
 			return result
 		}
-		resp.Body.Close()
+
+		// 402 = proxy reachable but bandwidth exhausted — proxy is alive,
+		// mark healthy so the bandwidth tracker can handle skipping it.
+		if resp.StatusCode == http.StatusPaymentRequired {
+			result.Latency = time.Since(start)
+			result.Healthy = true
+			result.BandwidthExhausted = true
+			result.Country = detectCountry(p.IP)
+			result.IPRemote = p.IP
+			fmt.Printf("[proxy-health] %s:%d bandwidth exhausted (402) — marking available, bw-tracker will skip\n", p.IP, p.Port)
+			return result
+		}
 	}
 
 	result.Latency = time.Since(start)

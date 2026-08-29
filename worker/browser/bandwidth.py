@@ -303,6 +303,11 @@ async def aggressive_resource_blocker(context, block_images: bool = None) -> Non
         url = route.request.url
         rt = route.request.resource_type
 
+        # Never block reCAPTCHA resources — audio challenge download must go through
+        if "recaptcha" in url or "/sorry/" in url:
+            await route.continue_()
+            return
+
         if _is_target_url(url, target_domains):
             if rt in target_blocked:
                 await route.abort()
