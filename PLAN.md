@@ -114,7 +114,7 @@ Last updated: 2026-08-28
   `cmd/dashboard/main.go` → `go run ./cmd/dashboard/` → `analytics/dashboard.html`.
 - [x] **Telegram notif** — kirim summary harian (tasks, success rate, SERP positions) via bot.
   `internal/notify/telegram.go`, hook ke `performDailyReset()`. Config: `telegram:` di config.yaml.
-- [ ] **Docker Compose** — sudah ada DOCKER.md, belum ditest di production.
+- [x] **Docker Compose** — tested dan running. Fix: hapus host port binding worker (konflikt dengan host process). `docker compose up -d` → kedua container healthy.
 - [ ] **Rate limiter per domain** — kalau multi-domain, limit search per domain per hari.
 
 ---
