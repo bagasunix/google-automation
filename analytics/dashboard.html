@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Search Automation Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+  h1 { color: #7c3aed; margin-bottom: 4px; }
+  .meta { color: #64748b; font-size: 13px; margin-bottom: 32px; }
+  h2 { color: #a78bfa; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-top: 40px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
+  th { background: #1e293b; color: #94a3b8; text-align: left; padding: 8px 12px; font-weight: 600; }
+  td { padding: 7px 12px; border-bottom: 1px solid #1e293b; }
+  tr:hover td { background: #1e293b44; }
+  .good { color: #34d399; }
+  .bad  { color: #f87171; }
+  .warn { color: #fbbf24; }
+  .na   { color: #475569; }
+  .totals td { background: #1e1b3a; font-weight: 600; }
+  a { color: #818cf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Search Automation Dashboard</h1>
+<div class="meta">Generated: 2026-08-29 20:47:55</div>
+
+<h2>Summary (last 30 days)</h2>
+<table>
+  <tr><th>Date</th><th>Searches</th><th>OK</th><th>Fail</th><th>CAPTCHA</th><th>Success%</th><th>CAPTCHA%</th><th>Avg Dwell</th><th>Avg SERP</th></tr>
+  
+  <tr>
+    <td>2026-08-29</td>
+    <td>10</td>
+    <td class="good">0</td>
+    <td class="bad">9</td>
+    <td class="warn">1</td>
+    <td class="bad">0.0%</td>
+    <td class="warn">10.0%</td>
+    <td>0.0s</td>
+    <td><span class="na">N/A</span></td>
+  </tr>
+  
+  <tr class="totals">
+    <td>TOTAL</td>
+    <td>10</td>
+    <td class="good">0</td>
+    <td class="bad">9</td>
+    <td class="warn">1</td>
+    <td>0.0%</td>
+    <td>10.0%</td>
+    <td>—</td><td>—</td>
+  </tr>
+</table>
+
+<h2>Proxy Performance</h2>
+<table>
+  <tr><th>IP:Port</th><th>Country</th><th>Used</th><th>OK</th><th>Fail</th><th>CAPTCHA</th><th>Success%</th><th>Status</th></tr>
+  
+  <tr>
+    <td>45.38.107.97:6014</td>
+    <td></td>
+    <td>2</td>
+    <td class="good">0</td>
+    <td class="bad">2</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>31.59.20.176:6754</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>31.58.9.4:6077</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>198.105.121.200:6462</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>84.247.60.125:6095</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>64.137.96.74:6641</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>38.154.185.97:6370</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>142.111.67.146:5611</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">0</td>
+    <td class="warn">1</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>198.23.243.226:6361</td>
+    <td></td>
+    <td>1</td>
+    <td class="good">0</td>
+    <td class="bad">1</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+  <tr>
+    <td>191.96.254.138:6185</td>
+    <td></td>
+    <td>0</td>
+    <td class="good">0</td>
+    <td class="bad">0</td>
+    <td class="warn">0</td>
+    <td class="bad">0.0%</td>
+    <td><span class="good">active</span></td>
+  </tr>
+  
+</table>
+
+<h2>Articles (last searched)</h2>
+<table>
+  <tr><th>Title</th><th>Searches</th><th>SERP Pos</th><th>Last Searched</th></tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2014/10/penjahat-cyber-membedah-sektor-ritel.html" target="_blank">Penjahat Cyber Membedah Sektor Ritel - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2020/04/5-aplikasi-olahraga-lari-di-android.html" target="_blank">Kenali 5 Aplikasi Olahraga Lari di Android untuk Program Sehatmu - BagasUnix</a></td>
+    <td>2</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/06/cara-membuat-phising-dengan-vbnet.html" target="_blank">Cara Membuat Phising Dengan VB.Net - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/02/wow-fbi-menjanjikan-rp38-m-bagi-yang.html" target="_blank">Wow! FBI Menjanjikan Rp.38 M Bagi yang Bisa Mencari Hacker Ini - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/ios-13-launching-berikut-fitur-dan.html" target="_blank">iOS 13 Launching, Berikut Fitur dan compatibility device - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2016/07/pengguna-facebook-harap-waspada-tanggal-17juli2016.html" target="_blank">Pengguna Facebook Harap Waspada!! Tanggal 17 Juli 2016 - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2024/03/siang-dan-malam-sama-panjang-fenomena-equinox.html" target="_blank">Siang dan Malam Sama Panjang! Fenomena Equinox Telah Tiba! - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/pokemon-go-mengadakan-gofest-2019-di-chicago.html" target="_blank">Pokémon GO Mengadakan GoFest 2019 Di Chicago - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2016/08/bot-pokemon-go-terbaru-tanggal-8-agustus-2016.html" target="_blank">Bot Pokemon Go Terbaru Tanggal 8 Agustus 2016 - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2016/07/cara-mengatasi-masalah-gps-pada-pokemon-go.html" target="_blank">Cara Mengatasi Masalah GPS Pada Pokemon Go - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/drama-baru-mbc-mengadaptasi-dari-webtoon-akan-dibintangi-oleh-rowoon-sf9-kim-hye-yoon-dan-lee-jae-wook.html" target="_blank">Drama Baru MBC Mengadaptasi Dari Webtoon, Akan Dibintangi Oleh Rowoon SF9, Kim Hye Yoon, dan Lee Jae Wook - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2014/10/membuat-drop-cap-huruf-besar-pada-awal.html" target="_blank">Membuat Drop Cap (Huruf Besar) Pada Awal Postingan - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/sekuel-plants-vs-zombies-garden-warfare-tidak-akan-ada-di-ea.html" target="_blank">Sekuel Plants vs. Zombies Garden Warfare tidak akan ada di EA - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/ustaz-arifin-ilham-meninggal-dunia-di-malaysia.html" target="_blank">Ustaz Arifin Ilham Meninggal Dunia Di Malaysia - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/11/website-resmi-polri-dijailin-seorang-hacker.html" target="_blank">Website Resmi Polri Dijailin Seorang Hacker - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/08/cara-deface-website-dengan-sqlmap.html" target="_blank">Cara Deface Website Dengan SQLMap - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/08/tablet-android-lokal-dijual-seharga-1.html" target="_blank">Tablet Android Lokal Dijual Seharga 1 Jutaan? - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/10/kpk-dikirimkan-peti-mati-oleh-seorang-warga-solo.html" target="_blank">KPK Dikirimkan Peti Mati Oleh Seorang Warga Solo - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2014/10/manga-naruto-akan-berakhir-dalam-5.html" target="_blank">Manga Naruto Akan Berakhir Dalam 5 Minggu? - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/08/cara-deface-dengan-comuser.html" target="_blank">Cara Deface Dengan Com_User - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/06/aplikasi-auto-like-2015.html" target="_blank">Aplikasi Auto Like 2015 - BagasUnix</a></td>
+    <td>1</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2026/07/perbedaan-ssd-dan-hdd-untuk-laptop.html" target="_blank">Perbedaan SSD dan HDD untuk laptop coding - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/10/kota-romawi-kuno-dengan-desain-modern.html" target="_blank">Kota Romawi Kuno Dengan Desain Modern? - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/10/jembatan-kaca-yang-mengalahkan-grand-canyon-skywalk.html" target="_blank">Jembatan Kaca Yang Mengalahkan Grand Canyon Skywalk? - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/08/cheat-coc-via-pc-terbaru.html" target="_blank">Cheat COC Via PC Terbaru - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/09/kumpulan-tool-hacking-terbaik-dan-paling-banyak-digunakan.html" target="_blank">Kumpulan Tool Hacking Terbaik dan Paling Banyak Digunakan - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/08/download-keygen-smadav-terbaru.html" target="_blank">Download Keygen Smadav Terbaru - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/cara-mengatasi-layanan-google-play-berhenti-di-android.html" target="_blank">Cara Mengatasi Layanan Google Play Berhenti DI Android - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/09/pengertian-dos-dan-ddos.html" target="_blank">Pengertian DoS dan DDoS - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/netease-akan-merilis-game-pokemon-quest-china-mobile-dalam-waktu-dekat.html" target="_blank">Tahun 2020 Perusahaan Pokemon Akan Meluncurkan Banyak Permainan - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/menghapus-akun-google-pada-smartphone.html" target="_blank">Menghapus Akun Google Pada Smartphone - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/09/template-invert-grid-responsive-for-blogger-free.html" target="_blank">Template Invert Grid Responsive For Blogger Free - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/09/jelang-konser-website-palsu-pembelian-tiket-bon-jovi-beredar.html" target="_blank">Jelang Konser, Website Palsu Pembelian Tiket Bon Jovi Beredar - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2024/05/cara-install-kafka-di-linux-ubuntu.html" target="_blank">Cara menginstall Kafka di server ubuntu 22.04 secara real-time - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/cara-download-video-dari-youtube-2019.html" target="_blank">Cara Download Video Dari Youtube 2019 - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2015/09/coding-akan-jadi-pelajaran-disekolah.html" target="_blank">&#34;Coding&#34; Akan Jadi Pelajaran Disekolah? - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/cara-memperbaiki-dan-memperbarui-kesalahan-di-playstore-2019.html" target="_blank">Cara Memperbaiki dan Memperbarui Kesalahan Di Google Play Store 2019 - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/aplikasi-pesan-google-mencapai-500-juta-unduhan-di-playstore.html" target="_blank">Aplikasi Pesan Google mencapai 500 juta unduhan di Play Store - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2020/04/untuk-kamu-para-gamer-perhatikan-6-tips.html" target="_blank">Untuk Kamu Para Gamer, Perhatikan 6 Tips Membeli Laptop Gaming ini! - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/06/cara-mudah-melihat-lisensi-original-pada-windows-di-laptop-atau-pc-kita.html" target="_blank">Cara Mudah Melihat Lisensi Original Pada Windows Di Laptop Atau PC Kita - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/teknologi-ai-meciptakan-animasi-monalisa.html" target="_blank">Teknologi AI Meciptakan Animasi Mona Lisa - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/aladdin-telah-mendominasi-box-office-international.html" target="_blank">Aladdin Telah Mendominasi Box Office International - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/google-duo-sekarang-bisa-melakukan-panggilan-video-delapan-orang.html" target="_blank">Google Duo Sekarang Bisa Melakukan Panggilan Video Delapan Orang - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/iklan-pada-whatsapp-akan-muncul-tahun-2020.html" target="_blank">Iklan Pada Whatsapp Akan Muncul Tahun 2020 - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/bagaimana-cara-install-call-of-duty-di-smartphone.html" target="_blank">Bagaimana Cara Install Call Of Duty Di Smartphone - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/update-ijonkz-20-blogger-theme-free.html" target="_blank">Update Ijonkz 2.0 Blogger Theme Free - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/amazon-mengerjakan-perangkat-untuk-membaca-emosi-manusia.html" target="_blank">Amazon Mengerjakan Perangkat Untuk Membaca Emosi Manusia - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/tor-browser-versi-terbaru-kini-tersedia-di-play-store.html" target="_blank">Tor Browser Versi Terbaru Kini Tersedia Di Play Store - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/terminator-trailer-pertama-dark-fate-melihat-linda-hamilton-kembali-sebagai-sarah-connor.html" target="_blank">Terminator: Trailer pertama Dark Fate melihat Linda Hamilton kembali sebagai Sarah Connor - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+  <tr>
+    <td><a href="https://www.bagasunix.com/2019/05/tampilan-baru-google-pencarian-untuk-di-ponsel.html" target="_blank">Tampilan Baru Google Pencarian Untuk Di Ponsel - BagasUnix</a></td>
+    <td>0</td>
+    <td class="na">N/A</td>
+    <td>never</td>
+  </tr>
+  
+</table>
+</body>
+</html>
