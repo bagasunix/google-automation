@@ -1,281 +1,369 @@
-# Google Automation
+# 🚀 Google Automation Engine (bagasunix.com)
 
-Search automation engine untuk nge-push ranking web sendiri di Google/Bing dengan simulasi perilaku manusia.
+Search automation engine enterprise-grade untuk menaikkan peringkat artikel website sendiri (`bagasunix.com`) di Google dan Bing melalui simulasi perilaku browsing manusia yang 100% realistis dan tidak terdeteksi (*undetected*).
 
-## Cara Kerja
+---
 
-```
-1. Scrape proxy dari Webshare API (multi-key rotation) → health check → pool aktif
-2. Scrape artikel web sendiri (sitemap.xml) → ambil judul + meta desc
-3. Setiap loop (ganti proxy setiap kali, browser fresh/clean):
-   ├─ Pilih engine (Google 70% / Bing 30%) — kalau Google kena CAPTCHA, otomatis Bing
-   ├─ Pre-search #1: query "BagasUnix" → casual browse SERP → klik result lain → baca 20-60s → back
-   ├─ Pre-search #2 (50% skip): query keyword random dari artikel
-   ├─ Target search: ketik judul/meta artikel ke engine yang dipilih
-   ├─ Cari domain sendiri di SERP (page 1 + page 2) → klik dengan variasi behavior
-   ├─ Baca artikel: scroll chunk, pause di H2/H3, pause di code/image, total 60-300s
-   ├─ Klik 1-2 internal link → baca full (simulate_reading) → balik
-   ├─ Exit: close/back (varied)
-   └─ Cooldown sebelum next task
-4. Update analytics: SERP position, dwell time, success rate
-```
-
-## Arsitektur
-
-Hybrid Go + Python. Go handle speed (proxy, scheduling, analytics). Python handle anti-detection (playwright stealth, humanized browser).
+## 📋 Cara Kerja Sistem
 
 ```
-Go Orchestrator (port: dynamic)     Python Worker (localhost:50051)
-├─ Proxy Manager (multi-key)         ├─ Stealth Browser (canvas/WebGL/tz spoof)
-├─ Article Collector (sitemap.xml)   ├─ Humanized Search (typing, SERP browse)
-├─ Scheduler (per-engine pause)      ├─ Post-Click Engagement (reading sim)
-├─ Analytics + SERP tracking         ├─ Internal click (1-2 articles, full read)
-├─ SQLite storage (WAL mode)         ├─ CAPTCHA detector
-└─ gRPC client ──────────────────→ gRPC server (port 50051)
+1. Proxy Pool Management:
+   ├─ Scrape & load proxy dari Webshare API (multi-key rotation) / Residential Proxy / Custom File
+   ├─ Health-check paralel (100 goroutines) → filter latency & bandwidth → pool aktif
+   └─ Proxy health scoring: auto-quarantine 4 jam jika kena CAPTCHA, 2 jam jika network error.
+
+2. Article & Keyword Ingestion:
+   ├─ Scrape artikel target via sitemap.xml → simpan judul, meta description, topik ke SQLite
+   ├─ Smart Priority Matrix: Artikel di Halaman 2 & 3 (posisi 11–30) otomatis dapat bobot pencarian 3x lebih tinggi
+   └─ AI Semantic Query Expander: Generate variasi query alami (Groq Llama-3 / Heuristic Indo Slang).
+
+3. Task Execution Loop (Per Task Fresh Browser Session & Dynamic Cooldown):
+   ├─ Traffic Source Mixer: 70% Google, 10% Bing, 10% Direct Bookmark/Homepage, 10% Social Referral
+   ├─ Pre-search #1: Query topik/keyword umum → casual browse SERP → baca cuplikan 20-60s
+   ├─ Pre-search #2 (50% random chance): Query keyword kedua dari variasi AI
+   ├─ Target Search: Ketik judul/meta/long-tail dengan simulasi ketukan jari manusia & koreksi typo (backspace)
+   ├─ SERP Pagination: Telusuri hasil pencarian hingga Halaman 3 (posisi 1–30)
+   ├─ Click Variation & Pogo-Sticking Engine:
+   │  ├─ 50% Klik target langsung (setelah jeda membaca snippet 3-8s)
+   │  ├─ 25% Scroll melewati target, baca hasil lain, scroll balik, lalu klik target
+   │  └─ 25% Pogo-Sticking: Klik kompetitor #1/#2, skim 4–7s, tekan tombol Back (Bounce), lalu klik target kita
+   ├─ Post-Click Reading Engagement:
+   │  ├─ Initial scan: Diam 5–12s membaca layar pertama
+   │  ├─ Scroll chunk: 200–500px, jeda lama pada H2/H3, code block, dan gambar
+   │  ├─ Reading Heatmap: Seleksi/highlight teks penting, micro-pause 1–3s, scroll balik atas (re-read)
+   │  └─ Total waktu membaca artikel: 60–300s (proporsional dengan panjang konten)
+   ├─ Multi-Tab & Internal Navigation:
+   │  ├─ Klik 1-2 artikel internal di domain sendiri
+   │  ├─ 40% Buka artikel di Tab Baru (Ctrl+Click), baca 10–20s, tutup tab, kembali ke artikel utama
+   │  └─ 60% Buka di tab yang sama, baca penuh, lalu navigasi kembali
+   ├─ Exit Strategy: 70% Close browser, 30% Buka situs distraksi (Wikipedia/News) sebelum keluar
+   └─ Multi-Tier CAPTCHA Solver: Jika Google memicu /sorry/ reCAPTCHA v2 → pecahkan via Groq Whisper / Google Web Speech.
+
+4. Observability & Sync:
+   ├─ Catat posisi SERP, dwell time, scroll depth, konsumsi bandwidth, dan status ke SQLite (WAL mode)
+   ├─ Perbarui Live Web Dashboard (:8080) dengan visualisasi Chart.js & fitur Export CSV Report
+   └─ Kirim ringkasan atau terima perintah via Telegram Bot (/status, /stats, /pause, /resume).
 ```
 
-## Struktur Project
+---
+
+## 🏗️ Arsitektur Sistem
+
+Arsitektur **Hybrid Go + Python** membagi beban kerja secara optimal: Go menangani kecepatan tinggi (proxy, dynamic scheduler, analytics, SQLite WAL), sedangkan Python menangani stealth browser automation (SeleniumBase UC, CDP injection, humanizer).
+
+```
+Go Orchestrator (Port Dinamis)          Python Worker (Port 50051)
+├─ Proxy Manager (Multi-Key Webshare)   ├─ SeleniumBase UC (Undetected-ChromeDriver)
+├─ Residential Proxy Hub (Smartproxy)   ├─ CDP Stealth (WebGL, Audio, WebRTC, Canvas)
+├─ Article Queue & Priority Matrix      ├─ Search Flow (Google & Bing, SERP Hal 1-3)
+├─ Dynamic Scheduler & Traffic Mixer    ├─ Pogo-Sticking Engine & Typo Humanizer
+├─ GSC Opportunity Optimizer            ├─ Engagement Simulation (Multi-Tab & Heatmap)
+├─ Telegram Bot Controller              ├─ AI Semantic Query Expander (Groq LLM)
+├─ Live Web Dashboard (:8080)           ├─ Multi-Tier CAPTCHA Solver (Whisper/Web)
+├─ SQLite Storage (WAL Mode, Pure Go)   ├─ Warm Profiles Manager (profile_0..9)
+└─ gRPC Client ─────────────────────→   └─ gRPC Server (:50051)
+```
+
+---
+
+## 📁 Struktur Direktori
 
 ```
 google-automation/
-├── cmd/main.go                          Go entry point
-├── config/config.yaml                   Config (domain, engine ratio, settings)
+├── cmd/
+│   ├── main.go                       # Entrypoint Go Orchestrator
+│   └── dashboard/main.go             # Live Web Dashboard Server (:8080)
+├── config/
+│   ├── config.yaml                   # Konfigurasi utama engine, scheduler & proxy
+│   └── config.yaml.example           # Template konfigurasi bersih
 ├── internal/
-│   ├── config/config.go                 YAML config loader
-│   ├── proxy/                           Proxy scrape + health + rotation
-│   ├── article/                         Sitemap scraper + title/meta extractor
-│   ├── scheduler/                       Dynamic throttle + per-engine pause + cooldown
-│   ├── analytics/                       Stats + SERP position tracking
-│   ├── storage/                         SQLite (pure Go, no CGO, WAL+busy_timeout)
-│   ├── grpc/                            gRPC client + proto
-│   └── orchestrator/                    Main loop coordinator
-├── worker/                              Python worker
-│   ├── main.py                          gRPC server
-│   ├── browser/                         Stealth + session + humanizer
-│   ├── search/                          Google + Bing + SERP parser
-│   ├── engagement/                      Dwell + click + exit simulation
-│   ├── reporter.py                      JSON result + screenshot
-│   └── requirements.txt                 playwright, grpcio, bs4, lxml
+│   ├── article/                      # Sitemap scraper, queue & keyword priority matrix
+│   ├── bandwidth/                    # Bandwidth tracking & quota conservation
+│   ├── config/                       # YAML loader & .env integration
+│   ├── grpc/                         # gRPC client & protobuf generated files
+│   ├── gsc/                          # Google Search Console opportunity optimizer
+│   ├── notify/                       # Telegram notifier & interactive bot controller
+│   ├── orchestrator/                 # Main loop task coordinator
+│   ├── proxy/                        # Proxy pool, health scoring & residential hub
+│   ├── scheduler/                    # Dynamic throttle, cooldowns & traffic mixer
+│   └── storage/                      # SQLite queries, schema migrations & WAL mode
+├── worker/                           # Python Worker
+│   ├── main.py                       # gRPC server worker
+│   ├── browser/                      # Stealth CDP, session, warm profiles, humanizer
+│   ├── captcha/                      # Audio solver, STT fallback & token handler
+│   ├── engagement/                   # Reading dwell, multi-tab click, exit simulation
+│   ├── search/                       # Google/Bing SERP flows, AI query expander
+│   ├── reporter.py                   # Result JSON formatter & screenshot capturer
+│   └── requirements.txt              # Dependencies: seleniumbase, grpcio, openai, etc.
 ├── scripts/
-│   ├── run.sh                           Start Python + Go
-│   └── stop.sh                          Stop all
-└── data/                                SQLite DB (auto-created)
+│   ├── run.sh                        # Universal launcher (WSL/Local/VPS)
+│   ├── stop.sh                       # Graceful stopper
+│   ├── vps_setup.sh                  # Turnkey installation script for Ubuntu/Debian
+│   ├── install_services.sh           # Systemd service installer
+│   ├── watchdog.sh                   # Auto-heal watchdog cron script
+│   └── systemd/                      # Unit file templates (.service)
+├── data/                             # SQLite DB (`search_automation.db`) & profiles
+└── .env                              # Kredensial rahasia (API Keys & Tokens)
 ```
 
-## Setup
+---
 
-### Prasyarat
+## 🛠️ Setup & Instalasi
 
-- Go 1.25+ (di ~/go-sdk/go/bin)
-- Python 3.12+ (di system)
-- WSL2 Ubuntu
+### 1. Prasyarat Lingkungan
+- **Go**: Versi 1.22+ (terpasang di system atau `~/go-sdk/go/bin`)
+- **Python**: Versi 3.10+ (dengan virtual environment)
+- **Google Chrome**: Google Chrome Stable untuk headless Undetected-ChromeDriver
+- **Sistem Operasi**: Linux VPS (Ubuntu/Debian) atau WSL2 Ubuntu
 
-### Install
+### 2. Setup Otomatis di VPS Baru (Turnkey)
+Cukup jalankan script setup satu klik:
+```bash
+cd ~/Project/google-automation
+bash scripts/vps_setup.sh
+```
 
+### 3. Setup Manual (Local / WSL2)
 ```bash
 cd ~/Project/google-automation
 
-# Setup Python worker (first time only)
+# Setup Python Worker Virtual Environment
 cd worker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 cd ..
 
-# Setup Go (auto-download deps)
+# Setup Go Dependencies & Build Binaries
 export PATH="$HOME/go-sdk/go/bin:$PATH"
 go mod tidy
+go build -o bin/orchestrator cmd/main.go
+go build -o bin/dashboard cmd/dashboard/main.go
 ```
 
-### Konfigurasi
+---
 
-Edit `config/config.yaml`:
+## ⚙️ Konfigurasi
 
+### 1. File `.env` (Kredensial Rahasia)
+Salin template `.env.example` ke `.env` dan isi kunci API yang relevan:
+```bash
+cp .env.example .env
+nano .env
+```
+Contoh isi `.env`:
+```bash
+# Proxy Webshare API Keys (Multi-Key)
+WEBSHARE_API_KEY_0=your_primary_webshare_key
+WEBSHARE_API_KEY_1=your_backup_webshare_key
+
+# STT Audio CAPTCHA & AI Query Expander (Groq - Cepat & Gratis)
+OPENAI_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Telegram Bot Notifier & Remote Control (Opsional)
+TELEGRAM_BOT_TOKEN=123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+TELEGRAM_CHAT_ID=123456789
+```
+
+### 2. File `config/config.yaml`
 ```yaml
 domains:
-  - bagasunix.com                    # domain web lo
+  - bagasunix.com
 
 engine_ratio:
-  google: 70                         # 70% search di Google
-  bing: 30                           # 30% search di Bing
-  # Kalau Google kena CAPTCHA → otomatis fallback ke Bing
-  # Kalau semua proxy Google kena CAPTCHA → Google di-pause, Bing tetap jalan
+  google: 70                         # 70% Google Search
+  bing: 10                           # 10% Bing Search
+  direct: 10                         # 10% Direct Bookmark/Homepage
+  social: 10                         # 10% Social Referral (Twitter/Reddit)
 
 scheduler:
-  max_search_per_proxy: 5            # max 5 search per proxy per hari
-  new_article_boost: 5               # artikel baru: 5x search minggu 1
-  regular_max: 3                     # artikel lama: max 3x search
-  captcha_pause_hours: 3             # auto pause per-engine kalau CAPTCHA naik
-  min_cooldown_seconds: 30           # jeda antar task
-  max_cooldown_seconds: 120
-  post_exit_cooldown_min: 30         # jeda setelah exit artikel
+  max_search_per_proxy: 5            # Maksimal pencarian per proxy per hari
+  new_article_boost: 5               # Artikel baru (<7 hari): kuota 5x pencarian
+  regular_max: 3                     # Artikel biasa: kuota 3x pencarian
+  captcha_pause_hours: 3             # Auto-pause per engine jika CAPTCHA spike
+  min_cooldown_seconds: 30           # Jeda minimum antar tugas
+  max_cooldown_seconds: 120          # Jeda maksimum antar tugas
+  post_exit_cooldown_min: 30         # Jeda setelah keluar dari artikel
   post_exit_cooldown_max: 120
-  active_hours_start: 7              # jam aktif (7am waktu proxy)
-  active_hours_end: 23               # (11pm waktu proxy)
+  active_hours_start: 7              # Jam aktif mulai (07:00 waktu lokal proxy)
+  active_hours_end: 23               # Jam aktif berakhir (23:00 waktu lokal proxy)
 
 proxy:
+  provider: "webshare"               # "webshare" | "residential" | "custom_file"
   refresh_interval_hours: 3
   health_check_timeout: 8
-  # Multi-key rotation: key #0 dipakai dulu sampai habis/CAPTCHA, baru pindah key #1
   webshare_api_keys:
-    - "YOUR_API_KEY_0"               # key #0 (primary)
-    - "YOUR_API_KEY_1"               # key #1 (uncomment kalau punya)
+    - "YOUR_KEY_0"
 
-grpc:
-  port: 50051
-  worker_timeout: 600                # timeout per task (detik) — cukup untuk full reading
+captcha:
+  enabled: true
+  max_attempts: 3
+  solver: "openai_api"               # "openai_api" (Groq) | "google_web" | "whisper"
+  whisper_model: "base"              # Model lokal ringan (~70MB)
 ```
 
-## Menjalankan
+---
 
+## 🚦 Cara Menjalankan
+
+### A. Menjalankan Otomatis (CLI Mode)
 ```bash
-# Start (Python worker + Go orchestrator)
 ./scripts/run.sh
-
-# Stop
+```
+Untuk menghentikan:
+```bash
 ./scripts/stop.sh
 ```
 
-Atau manual:
-
+### B. Menjalankan Live Web Dashboard
 ```bash
-# Terminal 1: Python worker
-cd worker && source .venv/bin/activate && python main.py
+./bin/dashboard --serve :8080
+```
+Buka di browser: `http://<IP_VPS_ANDA>:8080` untuk melihat status, grafik tren performa **Chart.js**, dan tombol unduh **📥 Export CSV Report**.
 
-# Terminal 2: Go orchestrator
-export PATH="$HOME/go-sdk/go/bin:$PATH"
-go run cmd/main.go
+### C. Menjalankan 24/7 via Systemd di VPS
+```bash
+sudo bash scripts/install_services.sh
+
+# Start services
+sudo systemctl start google-automation
+sudo systemctl start google-dashboard
+
+# Monitoring log live
+sudo journalctl -u google-automation -f
 ```
 
-## Fitur Anti-Deteksi
+---
 
-### Browser Fingerprint
-- Canvas fingerprint dispoof
-- WebGL renderer dirandomize
-- Timezone + language sesuai proxy geo
-- WebRTC dimatikan (anti IP leak)
-- User-Agent rotation per session: 18 agents (Chrome/Edge/Firefox/Safari, Windows/Mac/Linux)
-- Cookie jar + localStorage fresh per session (clear_cookies() setiap ganti proxy)
-- Viewport randomized (1280×720 sampai 1920×1080)
+## 🛡️ Rincian Fitur Anti-Deteksi
 
-### Search Behavior
-- Pre-search dengan query topik (bukan judul langsung)
-- Typing 80-200ms per karakter (random delay)
-- SERP casual browsing: scroll, klik result lain, baca 20-60s, back
-- SERP dwell 5-15s sebelum klik (baca snippet)
-- Click variation:
-  - 50% klik target langsung (delay 3-8s)
-  - 30% scroll lewat target, baca lain, balik, klik
-  - 20% klik competitor dulu, baca 10-20s, back, klik target
-- Mouse movement: bezier curve (bukan linear), scroll ke viewport dulu sebelum klik
-- Consent banner dismiss: humanized click (bukan `.click()` langsung)
+### 1. Browser Fingerprint
+- **CDP Stealth Injection**: Injeksi script JavaScript pada `Page.addScriptToEvaluateOnNewDocument` untuk mem-patch prototype properti `navigator.webdriver = false`, `navigator.plugins`, `navigator.languages`, dan `window.chrome`.
+- **Canvas Noise**: Injeksi mikro-noise deterministik pada `toDataURL` dan `getImageData` agar hash canvas berganti natural.
+- **WebGL Mocking**: Mocking ekstensi `WEBGL_debug_renderer_info` dan fallback mock untuk lingkungan server headless tanpa GPU/X11.
+- **WebRTC IP Shield**: Mencegah kebocoran IP asli VPS melalui WebRTC STUN/TURN dengan policy `disable_non_proxied_udp` dan SDP candidate sanitization.
+- **AudioContext Spoofing**: Injeksi mikro-noise pada `AudioBuffer` & `AnalyserNode` untuk melindungi dari composite fingerprinting.
+- **Warm Profiles**: Penyimpanan cookies, cache, dan riwayat browsing di direktori `data/profiles/profile_0`..`9`.
+- **Mobile Emulation**: Dukungan rotasi User-Agent smartphone (Android & iPhone), mobile viewports, dan CDP touch emulation (`maxTouchPoints = 5`).
 
-### Post-Click Engagement
-- Initial pause 5-15s (scan halaman)
-- Scroll chunk 200-500px (bukan jump)
-- Pause di H2/H3 heading (3-8s, baca section)
-- Pause di code block / image (5-12s, pelajari)
-- Kadang scroll balik atas (re-read)
-- Micro-pause 1-3s mid-paragraf (berpikir)
-- Total baca 60-300s (sesuai panjang artikel)
-- **Internal clicks: selalu klik 1-2 artikel lain di site, baca full (simulate_reading), balik**
-- Exit varied: close tab / back to SERP
-- Cooldown 30-120s sebelum next task
+### 2. Search Behavior
+- **Pre-Search & Browsing Santai**: Melakukan pencarian topik umum sebelum menuju artikel target untuk membangun riwayat sesi alami.
+- **Typo Humanizer**: Pengetikan 80–200ms per karakter dengan simulasi salah ketik (*typo*) sesekali dan koreksi tombol *backspace*.
+- **SERP Snippet Reading**: Dwell 5–15 detik membaca deskripsi snippet sebelum mengklik link.
+- **Pogo-Sticking Engine**: Klik kompetitor rank 1–2 sebentar (4–7s), tekan tombol *Back (Bounce)*, lalu klik target `bagasunix.com`.
+- **Bezier Mouse Movements**: Pergerakan kursor melengkung alami dan scroll ke viewport elemen sebelum mengklik.
+- **Consent Banner Dismissal**: Klik manusiawi pada popup cookie/consent Google & Bing.
 
-### Proxy Management
-- **Multi-key Webshare rotation**: key #0 dipakai dulu, pindah ke key #1 kalau semua proxy key #0 blacklisted
-- Pool sorted by API key index — key #0 selalu di depan
-- max_search_per_proxy: 5 (1 proxy bisa reused 5x per hari)
-- Health check paralel (Go concurrency, 100 goroutines)
-- Auto-replace dead proxy setiap 3 jam
-- Blacklist permanent kalau trigger CAPTCHA
-- Time-of-day awareness: cuma search 7am-11pm waktu proxy lokal
+### 3. Post-Click Engagement
+- **Initial Scan**: Jeda 5–12 detik saat mendarat di halaman artikel.
+- **Smooth Chunk Scrolling**: Scroll bertahap 200–500px, bukan lompat instan.
+- **Element Pausing**: Jeda lebih lama saat membaca Heading H2/H3 (3–7s), blok kode (4–10s), dan gambar/diagram (3–6s).
+- **Reading Heatmap**: Simulasi seleksi/highlight teks dan scroll balik ke atas (*re-reading*).
+- **Multi-Tab Browsing**: Membuka internal link di tab baru (*Ctrl+Click*), membaca 10–20s, menutup tab, dan kembali ke artikel utama.
+- **Exit Variety**: 70% Menutup browser langsung, 30% berselancar ke situs distraksi sebelum sesi berakhir.
 
-### Engine Fallback
-- **Per-engine CAPTCHA pause**: Google kena CAPTCHA → Google di-pause 3 jam, Bing tetap jalan
-- **Auto-fallback**: `PickEngineAvailable()` skip engine yang sedang di-pause
-- **Per-engine rate check**: `CheckCaptchaRate()` hitung CAPTCHA rate per engine, bukan global
-- Kalau semua engine di-pause → orchestrator skip cycle, tunggu pause expire
+### 4. Proxy Reliability & Dynamic Throttling
+- **Multi-Key Failover**: Prioritas key Webshare #0, otomatis beralih ke key #1 jika kuota habis.
+- **Auto-Quarantine**: Karantina otomatis 4 jam jika proxy memicu CAPTCHA, dan 2 jam jika mengalami 3x network error berturut-turut.
+- **Time-of-Day Awareness**: Pencarian hanya berjalan pada jam aktif pengguna (07:00–23:00) sesuai zona waktu lokal IP proxy.
+- **Per-Engine Auto Fallback**: Jika Google memicu jeda CAPTCHA, pencarian otomatis dialihkan ke Bing/Direct/Social tanpa menghentikan bot.
 
-### Search Randomization
-Gak selalu search pakai judul. Random:
-- (a) Exact article title
-- (b) Meta description (full/partial)
-- (c) Title + partial meta desc
-- (d) Keyword dari title
-- (e) Keyword dari meta desc
+---
 
-## Database
+## 🗄️ Database Schema (SQLite WAL Mode)
 
-SQLite (file-based, no server). Auto-created di `search_automation.db`. WAL mode + busy_timeout 5s untuk concurrency.
+Database SQLite murni Go disimpan di `search_automation.db` dengan tabel:
+- **`proxies`**: `ip`, `port`, `country`, `timezone`, `active`, `latency_ms`, `used_count`, `blacklisted`, `blacklist_reason`.
+- **`articles`**: `domain`, `url`, `title`, `meta_desc`, `topic`, `searched_count`, `serp_position`, `last_searched_at`.
+- **`tasks`**: `article_id`, `proxy_id`, `engine`, `status`, `result_json`, `error`, `created_at`, `completed_at`.
+- **`daily_stats`**: `date`, `total_search`, `success`, `fail`, `captcha`, `avg_dwell_seconds`, `avg_serp_position`.
 
-```
-proxies        ip, port, country, timezone, active, latency, used_count, blacklisted
-articles       url, title, meta_desc, topic, searched_count, serp_position
-tasks          article_id, proxy_id, engine, status, result_json
-daily_stats    date, total_search, success, fail, captcha, avg_dwell
-```
+---
 
-## Screenshots
+## 📸 Screenshots Otomatis
 
-Python worker simpen screenshot otomatis pas error:
-- CAPTCHA ketahuan Google
-- Artikel gak ketemu di SERP
-- Proxy timeout / page load error
-- Click target gagal
+Python worker otomatis menyimpan tangkapan layar (screenshot) saat terjadi kondisi penting/error:
+- CAPTCHA terdeteksi di Google/Bing (`captcha_target_*.png`)
+- Domain target tidak ditemukan di SERP (`target_not_found_*.png`)
+- Kesalahan navigasi landing page (`wrong_landing_*.png`)
+- Exception / error tak terduga (`exception_*.png`)
 
-Lokasi: `screenshots/{task_id}_{timestamp}.png`
+File tersimpan di direktori: `screenshots/{task_id}_{error_type}_{timestamp}.png`.
 
-## gRPC Protocol
+---
 
-Go ↔ Python communicate via gRPC on localhost:50051.
+## 🔌 gRPC Protocol Definition
+
+Komunikasi antar proses Go Orchestrator dan Python Worker menggunakan gRPC pada port `50051`:
 
 ```protobuf
+syntax = "proto3";
+package searchautomation;
+
 service WorkerService {
     rpc ExecuteTask (TaskRequest) returns (TaskResponse);
 }
 
-TaskRequest:  task_id, article_title, article_url, domain,
-              proxy_ip, proxy_port, engine, pre_search_queries[],
-              proxy_username, proxy_password
-TaskResponse: task_id, success, engine, serp_position,
-              dwell_time, scroll_depth, internal_clicks,
-              captcha_hit, error
+message TaskRequest {
+    string task_id = 1;
+    string article_title = 2;
+    string article_url = 3;
+    string domain = 4;
+    string proxy_ip = 5;
+    int32 proxy_port = 6;
+    string engine = 7;                  // "google" | "bing" | "direct" | "social"
+    repeated string pre_search_queries = 8;
+    string proxy_username = 9;
+    string proxy_password = 10;
+    string proxy_country = 11;
+    string proxy_timezone = 12;
+    bool pre_search_enabled = 13;
+    double pre_search_2_chance = 14;
+    double serp_casual_click_chance = 15;
+    double competitor_click_chance = 16;
+    double distraction_exit_chance = 17;
+    int32 serp_dwell_seconds_min = 18;
+    int32 serp_dwell_seconds_max = 19;
+}
+
+message TaskResponse {
+    string task_id = 1;
+    bool success = 2;
+    string engine = 3;
+    string proxy_used = 4;
+    int32 serp_position = 5;            // 0 = not found, 1-30 = found position
+    int32 dwell_time_seconds = 6;
+    int32 scroll_depth_percent = 7;
+    int32 internal_clicks = 8;
+    bool captcha_hit = 9;
+    string error = 10;
+    int32 bandwidth_used_kb = 11;
+}
 ```
 
-## Tech Stack
+---
 
-| Component | Technology |
-|---|---|
-| Orchestrator | Go 1.25 |
-| Browser automation | Python + Playwright |
-| Anti-detection | Custom stealth scripts (canvas/WebGL/tz/UA) |
-| IPC | gRPC (protobuf) |
-| Database | SQLite (modernc.org/sqlite, pure Go, WAL) |
-| Config | YAML |
-| Proxy | Webshare API (multi-key rotation) |
+## 📱 Perintah Telegram Bot
 
-## Dependencies
+Jika bot token Telegram diisi pada `.env`, bot dapat dikendalikan dari jarak jauh:
+* `/status` — Memeriksa status orchestrator, worker, pool proxy yang tersedia, dan sisa waktu cooldown.
+* `/stats` — Menampilkan ringkasan analitik hari ini (Total pencarian, Sukses, CAPTCHA, Rata-rata Dwell).
+* `/pause` — Menghentikan sementara jadwal pencarian bot.
+* `/resume` — Melanjutkan kembali jadwal pencarian bot.
 
-### Go
-- google.golang.org/grpc
-- google.golang.org/protobuf
-- modernc.org/sqlite (pure Go, no CGO)
-- gopkg.in/yaml.v3
+---
 
-### Python
-- playwright >= 1.40.0
-- grpcio >= 1.60.0
-- grpcio-tools >= 1.60.0
-- beautifulsoup4 >= 4.12.0
-- lxml >= 5.1.0
+## 📊 Format Ekspor Laporan (CSV)
 
-## Catatan
+Endpoint `/api/export/csv` pada Web Dashboard menyediakan file laporan analitik harian:
+```csv
+Date,TotalSearches,Success,Fail,CAPTCHA,SuccessRatePercent,AvgDwellSeconds,AvgSerpPosition
+2026-08-29,24,23,1,0,95.83,112.40,3.50
+```
 
-- Webshare **datacenter** proxy akan selalu kena CAPTCHA di Google. Butuh **residential** proxy biar Google bisa jalan.
-- Bing berjalan normal dengan datacenter proxy — gunakan Bing dulu sambil nunggu residential proxy.
-- Google engine otomatis di-pause kalau kena CAPTCHA, Bing tetap jalan tanpa perlu ganti config.
-- Artikel baru otomatis dapat boost (5x search di minggu pertama).
-- CAPTCHA rate > 10% per engine → engine tersebut di-pause 3 jam (engine lain tidak terpengaruh).
-- Tambah API key Webshare ke `webshare_api_keys` list untuk lebih banyak proxy.
+---
+
+## 💡 Tips Penggunaan di VPS
+1. **Groq API Key**: Masukkan kunci API Groq gratis ke `.env` (`OPENAI_API_KEY=gsk_...`) untuk transkripsi audio CAPTCHA secepat kilat (<1 detik) dan variasi query AI alami.
+2. **Kualitas Proxy**: Untuk Google Search bervolume tinggi, gunakan Residential Proxy melalui pengaturan `provider: "residential"` di `config.yaml`.
+3. **Auto-Start**: Gunakan `scripts/install_services.sh` agar engine berjalan otomatis dan stabil 24/7 di VPS Anda.
