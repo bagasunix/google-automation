@@ -67,6 +67,9 @@ captcha:
   openai_api_key: ""
   openai_base_url: "https://api.groq.com/openai/v1"  # kosongkan untuk OpenAI default
   openai_model: "whisper-large-v3-turbo"             # model STT di provider tersebut
+  # --- token injection solver untuk Google /sorry/ reCAPTCHA v2 ---
+  token_solver: "capsolver"    # "capsolver" | "2captcha"
+  token_solver_key: ""         # isi dengan API key capsolver.com atau 2captcha.com
 
 bandwidth:
   monthly_limit_mb: 1024      # Webshare free plan = 1GB per key per month
@@ -82,3 +85,8 @@ bandwidth:
 article_collection:
   method: sitemap
   refresh_interval_hours: 6
+
+telegram:
+  enabled: false
+  bot_token: ""   # isi dengan token dari @BotFather
+  chat_id: ""     # isi dengan chat_id kamu (cek via @userinfobot)

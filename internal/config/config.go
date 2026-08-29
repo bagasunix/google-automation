@@ -17,6 +17,14 @@ type Config struct {
 	GRPC              GRPCConfig        `yaml:"grpc"`
 	Bandwidth         BandwidthConfig   `yaml:"bandwidth"`
 	ArticleCollection ArticleCollection `yaml:"article_collection"`
+	Telegram          TelegramConfig    `yaml:"telegram"`
+}
+
+// TelegramConfig configures the optional Telegram daily-summary notification.
+type TelegramConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
 }
 
 // EngineRatio defines the percentage split between search engines.
