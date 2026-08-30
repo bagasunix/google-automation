@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -157,31 +158,100 @@ type GeoIPResponse struct {
 	Timezone    string `json:"timezone"`
 }
 
-// DetectGeoIP queries ip-api.com for the country and timezone of an IP.
-func DetectGeoIP(ip string) (string, string) {
-	client := &http.Client{Timeout: 4 * time.Second}
+// ipwhoisResponse is the fallback provider's payload (ipwho.is).
+type ipwhoisResponse struct {
+	Success     bool   `json:"success"`
+	CountryCode string `json:"country_code"`
+	Timezone    struct {
+		ID string `json:"id"`
+	} `json:"timezone"`
+}
+
+// queryIPAPI asks ip-api.com. Returns ok=false on any failure so the caller
+// can try another provider rather than silently accepting a wrong answer.
+func queryIPAPI(client *http.Client, ip string) (country, tz string, ok bool) {
 	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,timezone", ip))
 	if err != nil {
-		return "", "UTC"
+		return "", "", false
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return "", "UTC"
+		return "", "", false
 	}
 
 	var data GeoIPResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || data.Status != "success" {
-		return "", "UTC"
+		return "", "", false
 	}
 
-	country := data.CountryCode
+	country = data.CountryCode
 	if country == "" {
 		country = data.Country
 	}
-	tz := data.Timezone
-	if tz == "" {
-		tz = "UTC"
+	if country == "" || data.Timezone == "" {
+		return "", "", false
 	}
-	return country, tz
+	return country, data.Timezone, true
+}
+
+// queryIPWhois asks ipwho.is — a second, independently-operated provider, so
+// a rate-limit or outage at ip-api.com doesn't take geo detection down with it.
+func queryIPWhois(client *http.Client, ip string) (country, tz string, ok bool) {
+	resp, err := client.Get(fmt.Sprintf("https://ipwho.is/%s", ip))
+	if err != nil {
+		return "", "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", false
+	}
+
+	var data ipwhoisResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || !data.Success {
+		return "", "", false
+	}
+	if data.CountryCode == "" || data.Timezone.ID == "" {
+		return "", "", false
+	}
+	return data.CountryCode, data.Timezone.ID, true
+}
+
+// DetectGeoIP resolves an IP's country and IANA timezone.
+//
+// Every browser session sets its timezone from this, so a wrong answer is an
+// "impossible geography" signal to every site the proxy visits. Two hazards
+// are handled here:
+//
+//  1. Falling back to "UTC" on failure silently recreates the fleet-wide
+//     UTC bug fixed earlier (every proxy claiming UTC regardless of country).
+//     ip-api.com allows only ~45 requests/minute while the health checker
+//     fires all proxies in parallel, so hitting that limit is realistic —
+//     and it would have degraded a whole refresh cycle to UTC without a
+//     single log line. A second provider is tried before giving up, and a
+//     genuine give-up is logged loudly rather than passed off as a real
+//     timezone.
+//  2. Providers genuinely disagree — 84.247.60.125 resolves to Poland on
+//     ip-api and Portugal on ipwho.is — so a mismatch is logged. We keep the
+//     primary's answer (picking arbitrarily wouldn't be more correct), but
+//     the log makes an otherwise invisible inconsistency debuggable.
+func DetectGeoIP(ip string) (string, string) {
+	client := &http.Client{Timeout: 4 * time.Second}
+
+	country, tz, ok := queryIPAPI(client, ip)
+	if ok {
+		if c2, tz2, ok2 := queryIPWhois(client, ip); ok2 && (c2 != country || tz2 != tz) {
+			log.Printf("[geoip] %s: providers disagree — ip-api=%s/%s ipwho.is=%s/%s (using ip-api)",
+				ip, country, tz, c2, tz2)
+		}
+		return country, tz
+	}
+
+	log.Printf("[geoip] %s: ip-api lookup failed — trying fallback provider", ip)
+	if country, tz, ok = queryIPWhois(client, ip); ok {
+		return country, tz
+	}
+
+	log.Printf("[geoip] %s: ALL geo providers failed — falling back to UTC, which is a "+
+		"detectable mismatch for a non-UTC proxy", ip)
+	return "", "UTC"
 }
