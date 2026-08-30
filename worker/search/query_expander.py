@@ -14,13 +14,15 @@ import random
 import re
 from typing import List
 
+from paths import CONFIG_PATH
+
 logger = logging.getLogger("worker.search.query_expander")
 
 
 def _load_config() -> dict:
     try:
         import yaml
-        config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
+        config_path = CONFIG_PATH
         with open(config_path, "r") as f:
             return yaml.safe_load(f) or {}
     except Exception:

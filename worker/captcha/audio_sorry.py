@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import random
 import time
 
 import requests as req
@@ -235,8 +236,12 @@ def _download_audio(sb, audio_src: str) -> bytes | None:
         if resp.status_code == 200 and len(resp.content) > 500:
             logger.info("audio downloaded via direct requests: %d bytes", len(resp.content))
             return resp.content
+        logger.warning(
+            "direct requests download rejected: status=%s bytes=%d proxied=%s",
+            resp.status_code, len(resp.content), bool(getattr(sb, "proxies", None)),
+        )
     except Exception as e:
-        logger.debug("direct requests download failed: %s", e)
+        logger.warning("direct requests download failed: %s", e)
 
     # Fallback: download through browser (respects session/cookies/proxy).
     # NOTE: sb.execute_async_script(script, timeout=None) does not support
@@ -402,6 +407,14 @@ def solve_sorry_audio(sb, max_attempts: int = 3) -> bool:
                 pass
 
         logger.warning("still on /sorry/ after attempt %d", attempt)
+
+        # A human who fails an audio challenge pauses before retrying —
+        # this loop was retrying in the same second, which is itself a
+        # bot signal on top of whatever caused the miss.
+        if attempt < max_attempts:
+            pause = random.uniform(3.0, 7.0)
+            logger.info("pausing %.1fs before retry (human-like)", pause)
+            time.sleep(pause)
 
     logger.error("solve_sorry_audio failed after %d attempts", max_attempts)
     return False

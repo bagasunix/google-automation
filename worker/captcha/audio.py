@@ -27,6 +27,8 @@ import re
 import tempfile
 from typing import Optional
 
+from paths import CONFIG_PATH
+
 logger = logging.getLogger("worker.captcha.audio")
 
 _WORD_TO_DIGIT = {
@@ -43,7 +45,7 @@ _whisper_model_cache = None
 def _load_captcha_config() -> dict:
     try:
         import yaml
-        config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
+        config_path = CONFIG_PATH
         with open(config_path, "r") as f:
             return yaml.safe_load(f).get("captcha", {})
     except Exception:

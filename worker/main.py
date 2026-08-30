@@ -16,12 +16,14 @@ import os
 import sys
 import random
 import time
+
+import paths as _paths
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def _load_dotenv_file():
-    for candidate in [".env", "../.env", os.path.expanduser("~/Project/google-automation/.env")]:
+    for candidate in [".env", "../.env", _paths.ENV_PATH]:
         if os.path.isfile(candidate):
             try:
                 with open(candidate, "r") as f:

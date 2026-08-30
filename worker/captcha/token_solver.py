@@ -24,6 +24,8 @@ import time
 
 import requests
 
+from paths import CONFIG_PATH
+
 logger = logging.getLogger("worker.captcha.token_solver")
 
 CAPSOLVER_CREATE_URL = "https://api.capsolver.com/createTask"
@@ -42,7 +44,7 @@ MAX_WAIT = 120      # seconds total wait
 def _load_config() -> dict:
     try:
         import yaml
-        path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
+        path = CONFIG_PATH
         with open(path) as f:
             return yaml.safe_load(f).get("captcha", {})
     except Exception:

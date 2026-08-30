@@ -12,9 +12,11 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
+import paths as _paths
+
 logger = logging.getLogger("worker.reporter")
 
-BASE_DIR = os.path.expanduser("~/Project/google-automation")
+BASE_DIR = _paths.BASE_DIR
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "screenshots")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 

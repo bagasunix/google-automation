@@ -86,12 +86,21 @@ class SBSession:
             os.environ["TZ"] = self.profile.timezone
 
         # Use new headless mode — far less detectable than old --headless
+        #
+        # NOTE: SeleniumBase splits `chromium_arg` on COMMAS, so any flag whose
+        # value contains one is torn in half. "--window-size=1920,1080" here
+        # reached Chrome as two flags — "--window-size=1920" (malformed: no
+        # height, so Chrome ignored it) plus a junk "--1080" — verified against
+        # chrome://version. Window sizing is done properly further down via
+        # set_window_size(profile.viewport), which also keeps the real window
+        # consistent with the viewport the stealth profile claims, so the flag
+        # was redundant on top of being broken. Keep comma-valued flags out of
+        # this string.
         chrome_args = (
             "--disable-dev-shm-usage "
             "--no-sandbox "
             "--disable-gpu "
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp "
-            "--window-size=1920,1080 "
         )
         if self.headless:
             chrome_args += "--headless=new "

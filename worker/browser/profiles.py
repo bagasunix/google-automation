@@ -11,9 +11,11 @@ import logging
 import zlib
 from typing import Optional
 
+import paths as _paths
+
 logger = logging.getLogger("worker.browser.profiles")
 
-BASE_PROFILES_DIR = os.path.expanduser("~/Project/google-automation/data/profiles")
+BASE_PROFILES_DIR = _paths.PROFILES_DIR
 # Comfortably above the real proxy count (12 as of 2026-08-30, growing) to
 # keep IP->slot collisions rare — a shared profile means two different
 # proxies' Google cookies get mixed into the same browsing history, which

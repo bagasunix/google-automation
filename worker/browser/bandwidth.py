@@ -35,9 +35,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import paths as _paths
+
 logger = logging.getLogger("worker.browser.bandwidth")
 
-BASE_DIR = os.path.expanduser("~/Project/google-automation")
+BASE_DIR = _paths.BASE_DIR
 BANDWIDTH_FILE = os.path.join(BASE_DIR, "data", "bandwidth.json")
 
 
@@ -45,7 +47,7 @@ def _load_bandwidth_config() -> dict:
     """Load bandwidth config from config.yaml."""
     try:
         import yaml
-        config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
+        config_path = _paths.CONFIG_PATH
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
         return cfg.get("bandwidth", {})

@@ -79,6 +79,7 @@ captcha:
   openai_api_key: ""           # keep empty — set OPENAI_API_KEY or GROQ_API_KEY in .env
   openai_base_url: "https://api.groq.com/openai/v1"  # kosongkan untuk OpenAI default
   openai_model: "whisper-large-v3-turbo"             # model STT di provider tersebut
+  prompt: "unrelated short English words"            # hint transkripsi: jawaban reCAPTCHA audio bukan kalimat wajar
   # --- token injection solver untuk Google /sorry/ reCAPTCHA v2 ---
   token_solver: "capsolver"    # "capsolver" | "2captcha"
   token_solver_key: ""         # keep empty — set TOKEN_SOLVER_KEY in .env
