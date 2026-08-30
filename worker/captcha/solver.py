@@ -82,6 +82,52 @@ def detect_recaptcha_version(sb) -> str:
         return "none"
 
 
+def _left_sorry_page(sb) -> bool:
+    """A /sorry/ challenge counts as solved only once Google navigates away."""
+    try:
+        return "/sorry/" not in sb.get_current_url()
+    except Exception:
+        return False
+
+
+def _try_gui_click_sorry(sb, attempts: int = 2) -> bool:
+    """
+    Solve the /sorry/ checkbox with undetected-chromedriver's native OS-level
+    click, without ever requesting the audio challenge.
+
+    Returns True only if the page actually leaves /sorry/.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            sb.switch_to_default_content()
+        except Exception:
+            pass
+
+        try:
+            sb.uc_gui_click_captcha()
+        except Exception as e:
+            # No display (headless) or PyAutoGUI unavailable — nothing more
+            # this approach can do, so stop retrying and let the caller fall
+            # through to the audio path.
+            logger.info("GUI captcha click unavailable (%s) — falling back", e)
+            return False
+
+        # reCAPTCHA verifies asynchronously, then Google redirects off
+        # /sorry/. Poll instead of guessing a single sleep duration.
+        for _ in range(10):
+            time.sleep(1)
+            if _left_sorry_page(sb):
+                logger.info(
+                    "/sorry/ solved via native GUI click on attempt %d "
+                    "(audio challenge never requested)", attempt
+                )
+                return True
+
+        logger.warning("GUI click attempt %d did not clear /sorry/", attempt)
+
+    return False
+
+
 def solve_sorry_captcha(sb, max_attempts: int = 2) -> bool:
     """
     Handle Google /sorry/ reCAPTCHA.
@@ -98,6 +144,27 @@ def solve_sorry_captcha(sb, max_attempts: int = 2) -> bool:
             "Rotate proxy or reduce request rate."
         )
         return False
+
+    # Try the native GUI click BEFORE anything audio-related.
+    #
+    # Requesting the audio challenge is what provokes Google's DosCaptcha
+    # ("automated queries") block — it is the best-known automation bypass,
+    # so Google withholds it aggressively from any IP it distrusts. Once
+    # that block fires, every remaining attempt is dead. This path used to
+    # go straight from version-detection into solve_sorry_audio(), which
+    # clicks the audio button almost immediately, so the single least
+    # detectable tool available — undetected-chromedriver's OS-level mouse
+    # click, which produces a genuine isTrusted=true event that a JS/Selenium
+    # click cannot fake — was never tried on the /sorry/ page at all (it was
+    # only wired into solve_captcha(), a different path for embedded
+    # reCAPTCHA that production rarely hits).
+    #
+    # Requires a real display: headless Chrome has no cursor for PyAutoGUI to
+    # move, so this raises there and we fall through to the old audio path
+    # exactly as before — no regression, just an extra chance to finish at
+    # the checkbox and never ask for audio.
+    if _try_gui_click_sorry(sb):
+        return True
 
     from captcha.audio_sorry import solve_sorry_audio
     if solve_sorry_audio(sb, max_attempts=max_attempts):
