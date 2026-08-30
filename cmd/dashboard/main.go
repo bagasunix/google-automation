@@ -51,6 +51,7 @@ type ProxyRow struct {
 	Port            int     `json:"port"`
 	Country         string  `json:"country"`
 	Username        string  `json:"username"`
+	APIKeyIndex     int     `json:"api_key_index"`
 	AccountLabel    string  `json:"account_label"`
 	Used            int     `json:"used"`
 	Success         int     `json:"success"`
@@ -1173,7 +1174,7 @@ func queryDaily(db *sql.DB) []DailyRow {
 
 func queryProxies(db *sql.DB) []ProxyRow {
 	rows, err := db.Query(`
-		SELECT ip, port, country, COALESCE(username, ''), used_count, blacklisted, COALESCE(blacklist_reason, '')
+		SELECT ip, port, country, COALESCE(username, ''), COALESCE(api_key_index, 0), used_count, blacklisted, COALESCE(blacklist_reason, '')
 		FROM proxies
 		ORDER BY blacklisted ASC, username ASC, used_count DESC`)
 	if err != nil {
@@ -1187,16 +1188,15 @@ func queryProxies(db *sql.DB) []ProxyRow {
 	for rows.Next() {
 		var r ProxyRow
 		var bl int
-		if err := rows.Scan(&r.IP, &r.Port, &r.Country, &r.Username, &r.Used, &bl, &r.BlacklistReason); err != nil {
+		if err := rows.Scan(&r.IP, &r.Port, &r.Country, &r.Username, &r.APIKeyIndex, &r.Used, &bl, &r.BlacklistReason); err != nil {
 			continue
 		}
 		r.Blacklisted = bl == 1
-		if r.Username == "xmnqpvrc" {
-			r.AccountLabel = "🔑 Webshare Key #1"
-		} else if r.Username == "mdtqrese" {
-			r.AccountLabel = "🔑 Webshare Key #2"
-		} else if r.Username != "" {
-			r.AccountLabel = "🛡️ " + r.Username
+		if r.Username != "" {
+			// api_key_index is recorded at scrape time (see proxy.Proxy.APIKeyIndex)
+			// from the actual WEBSHARE_API_KEYS position — not guessed from the
+			// sub-account username, which changes if a key is ever rotated.
+			r.AccountLabel = fmt.Sprintf("🔑 Webshare Key #%d", r.APIKeyIndex+1)
 		} else {
 			r.AccountLabel = "🌐 Public / Direct"
 		}

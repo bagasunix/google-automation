@@ -11,6 +11,7 @@ import random
 import time
 
 from browser.humanizer import random_pause, random_mouse_jitter
+from browser import bandwidth
 
 logger = logging.getLogger("worker.engagement.exit")
 
@@ -34,7 +35,7 @@ def exit_article(sb, domain: str, distraction_exit_chance: float = 0.0) -> None:
         logger.info("Exit strategy: distraction → %s", site)
         random_mouse_jitter(sb, duration_s=random.uniform(0.5, 1.5))
         try:
-            sb.open(site)
+            bandwidth.navigate(sb, site, target=False)
         except Exception as e:
             logger.warning("Distraction navigation failed: %s", e)
         return
@@ -44,7 +45,7 @@ def exit_article(sb, domain: str, distraction_exit_chance: float = 0.0) -> None:
         logger.info("Exit strategy: navigate away (simulate close)")
         random_mouse_jitter(sb, duration_s=random.uniform(0.5, 1.5))
         try:
-            sb.open("about:blank")
+            bandwidth.navigate(sb, "about:blank", target=False)
         except Exception:
             pass
 
@@ -64,7 +65,7 @@ def exit_article(sb, domain: str, distraction_exit_chance: float = 0.0) -> None:
         logger.info("Exit strategy: navigate to homepage %s", homepage)
         random_mouse_jitter(sb, duration_s=random.uniform(0.5, 1.5))
         try:
-            sb.open(homepage)
+            bandwidth.navigate(sb, homepage, target=True)
             time.sleep(random.uniform(3, 8))
         except Exception as e:
             logger.warning("Homepage navigation failed: %s", e)
@@ -75,7 +76,7 @@ def exit_article(sb, domain: str, distraction_exit_chance: float = 0.0) -> None:
         logger.info("Exit strategy: distraction → %s", site)
         random_mouse_jitter(sb, duration_s=random.uniform(0.5, 1.5))
         try:
-            sb.open(site)
+            bandwidth.navigate(sb, site, target=False)
         except Exception as e:
             logger.warning("Distraction navigation failed: %s", e)
 

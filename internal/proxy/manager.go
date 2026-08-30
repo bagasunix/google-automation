@@ -130,11 +130,12 @@ func (m *Manager) refresh() error {
 			Port:      r.Proxy.Port,
 			Protocol:  r.Proxy.Protocol,
 			Country:   r.Country,
-			Timezone:  timezoneForCountry(r.Country),
-			Username:  r.Proxy.Username,
-			Password:  r.Proxy.Password,
-			Active:    true,
-			LatencyMs: int(r.Latency.Milliseconds()),
+			Timezone:  r.Timezone,
+			Username:    r.Proxy.Username,
+			Password:    r.Proxy.Password,
+			APIKeyIndex: r.Proxy.APIKeyIndex,
+			Active:      true,
+			LatencyMs:   int(r.Latency.Milliseconds()),
 		}
 		id, err := m.db.UpsertProxy(sp)
 		if err != nil {
@@ -147,7 +148,7 @@ func (m *Manager) refresh() error {
 			Port:        r.Proxy.Port,
 			Protocol:    r.Proxy.Protocol,
 			Country:     r.Country,
-			Timezone:    timezoneForCountry(r.Country),
+			Timezone:    r.Timezone,
 			Latency:     r.Latency,
 			Username:    r.Proxy.Username,
 			Password:    r.Proxy.Password,
@@ -178,50 +179,5 @@ func (m *Manager) WaitUntilAvailable() {
 	for m.pool.AvailableCount() == 0 {
 		ch := m.notifyCh
 		<-ch // block until next refresh
-	}
-}
-
-// timezoneForCountry maps a country name to a rough IANA timezone.
-// This is used for the time-of-day awareness feature in the scheduler.
-func timezoneForCountry(country string) string {
-	switch country {
-	case "Indonesia":
-		return "Asia/Jakarta"
-	case "United States", "USA":
-		return "America/New_York"
-	case "China":
-		return "Asia/Shanghai"
-	case "India":
-		return "Asia/Kolkata"
-	case "Brazil":
-		return "America/Sao_Paulo"
-	case "Russia":
-		return "Europe/Moscow"
-	case "Germany":
-		return "Europe/Berlin"
-	case "United Kingdom":
-		return "Europe/London"
-	case "Japan":
-		return "Asia/Tokyo"
-	case "Singapore":
-		return "Asia/Singapore"
-	case "Thailand":
-		return "Asia/Bangkok"
-	case "Vietnam":
-		return "Asia/Ho_Chi_Minh"
-	case "Philippines":
-		return "Asia/Manila"
-	case "Malaysia":
-		return "Asia/Kuala_Lumpur"
-	case "Netherlands":
-		return "Europe/Amsterdam"
-	case "France":
-		return "Europe/Paris"
-	case "Canada":
-		return "America/Toronto"
-	case "Australia":
-		return "Australia/Sydney"
-	default:
-		return "UTC"
 	}
 }

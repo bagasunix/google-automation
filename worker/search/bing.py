@@ -26,6 +26,7 @@ from search.serp import (
     click_target_with_variation,
 )
 from captcha.solver import solve_captcha
+from browser import bandwidth
 
 CAPTCHA_MAX_ATTEMPTS = 3
 
@@ -45,7 +46,7 @@ BING_SEARCH_INPUT_SELECTORS = [
 
 def navigate_to_bing(sb) -> None:
     logger.info("Navigating to %s", BING_URL)
-    sb.open(BING_URL)
+    bandwidth.navigate(sb, BING_URL, target=False)
     time.sleep(random.uniform(0.5, 1.5))
 
     for sel in BING_SEARCH_INPUT_SELECTORS:
@@ -78,6 +79,10 @@ def perform_bing_search(sb, query: str) -> bool:
 
     type_humanized(sb, matched_selector, query)
     time.sleep(random.uniform(0.5, 1.5))
+
+    # Capture homepage bytes before the search submit navigates us to the
+    # results page — its performance timeline is about to be discarded.
+    bandwidth.accumulate(sb)
     press_enter_humanized(sb, matched_selector)
 
     try:

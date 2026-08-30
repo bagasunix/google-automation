@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from browser.humanizer import human_scroll, human_click_element, random_pause, mouse_bezier
+from browser import bandwidth
 
 logger = logging.getLogger("worker.search.serp")
 
@@ -194,6 +195,7 @@ def _parse_bing_serp(sb, start_offset: int = 1) -> list[SerpResult]:
 def _navigate_next_page(sb, engine: str, next_page: int) -> bool:
     """Navigate to the next page of search results."""
     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    bandwidth.accumulate(sb)
     try:
         if engine == "google":
             for sel in ['a#pnnext', 'a[aria-label="Next page"]', f'a[aria-label="Page {next_page}"]', 'button[jsname="jT2kWb"]']:
@@ -213,8 +215,7 @@ def _navigate_next_page(sb, engine: str, next_page: int) -> bool:
                 qs["start"] = [str((next_page - 1) * 10)]
                 next_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
                 logger.info("Navigating to Google page %d via URL: %s", next_page, next_url)
-                sb.open(next_url)
-                sb.wait_for_ready_state_complete(timeout=15)
+                bandwidth.navigate(sb, next_url, target=False)
                 time.sleep(random.uniform(2, 4))
                 return True
         else:
@@ -235,8 +236,7 @@ def _navigate_next_page(sb, engine: str, next_page: int) -> bool:
                 qs["first"] = [str((next_page - 1) * 10 + 1)]
                 next_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs, doseq=True), parsed.fragment))
                 logger.info("Navigating to Bing page %d via URL: %s", next_page, next_url)
-                sb.open(next_url)
-                sb.wait_for_ready_state_complete(timeout=15)
+                bandwidth.navigate(sb, next_url, target=False)
                 time.sleep(random.uniform(2, 4))
                 return True
     except Exception as e:
@@ -307,6 +307,12 @@ def click_target_with_variation(sb, target_result: SerpResult, engine: str = "go
 
 def _click_direct(sb, result: SerpResult) -> None:
     logger.info("Click strategy: direct target click")
+    # This is the single choke point every click strategy funnels through to
+    # actually land on the target domain — capture whatever non-target page
+    # we're leaving, then switch CDP blocking to target mode (full resources)
+    # before the navigation that lands us there.
+    bandwidth.accumulate(sb)
+    bandwidth.set_network_blocking(sb, target=True)
     if result.element_ref:
         try:
             human_click_element(sb, result.element_ref)
@@ -314,7 +320,7 @@ def _click_direct(sb, result: SerpResult) -> None:
         except Exception:
             pass
     try:
-        sb.open(result.url)
+        bandwidth.navigate(sb, result.url, target=True)
     except Exception as e:
         logger.warning("Direct URL open fallback failed: %s", e)
 
@@ -349,6 +355,7 @@ def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
                 href = link.get_attribute("href") or ""
                 if href.startswith("http") and result.url not in href and "google.com" not in href and "bing.com" not in href:
                     logger.info("Pogo-sticking: clicking competitor (%s)", href[:60])
+                    bandwidth.accumulate(sb)  # capture target-search SERP before leaving it
                     human_click_element(sb, link)
                     sb.wait_for_ready_state_complete(timeout=10)
 
@@ -358,6 +365,7 @@ def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
                     random_pause(2.0, 4.0)
 
                     logger.info("Pogo-sticking: bouncing back to SERP...")
+                    bandwidth.accumulate(sb)  # capture competitor page before leaving it
                     sb.go_back()
                     sb.wait_for_ready_state_complete(timeout=10)
                     random_pause(1.5, 3.0)

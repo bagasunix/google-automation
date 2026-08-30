@@ -106,3 +106,18 @@ telegram:
   enabled: false
   bot_token: ""   # isi dengan token dari @BotFather
   chat_id: ""     # isi dengan chat_id kamu (cek via @userinfobot)
+
+gsc:
+  # Path ke CSV export dari Google Search Console (Performance report ->
+  # export -> CSV, pastikan kolomnya include Query/Page/Clicks/Impressions/
+  # CTR/Position). Artikel yang cocok dengan halaman di CSV ini dapat bobot
+  # ekstra saat dipilih untuk di-search — makin tinggi impression tapi CTR
+  # rendah di posisi 4-20, makin sering diprioritaskan (lihat internal/gsc).
+  # Kosongkan buat matiin fitur ini — pemilihan artikel balik ke bobot
+  # posisi SERP biasa.
+  csv_path: ""    # contoh: data/gsc_export.csv
+  weight_multiplier: 10   # seberapa kuat halaman opportunity tertinggi di-boost
+                           # relatif ke bobot tier posisi SERP biasa (default 10x =
+                           # halaman opportunity terbaik dapet sampai 11x bobot
+                           # tier-nya). Naikkan kalau masih jarang kepilih di pool
+                           # artikel yang banyak, turunkan kalau terlalu dominan.

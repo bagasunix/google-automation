@@ -17,7 +17,11 @@ from typing import Optional
 
 logger = logging.getLogger("worker.browser.ip_health")
 
-_IPAPI_URL = "https://ipapi.co/{ip}/json/"
+# Self-lookup form — no explicit IP in the path. We always route this
+# request through the proxy being checked (see `proxies` below), so ipapi.co
+# sees whichever IP the request actually arrives from; that's the "outbound
+# IP Google will see" we care about, not some other arbitrary IP.
+_IPAPI_URL = "https://ipapi.co/json/"
 _FALLBACK_URL = "https://ip-api.com/json/{ip}?fields=status,query,org,hosting,proxy,countryCode,timezone"
 
 _DATACENTER_ORGS = [
@@ -87,7 +91,6 @@ def _fetch_ipapi(proxies: Optional[dict], timeout: int) -> Optional[dict]:
     import urllib.request
     import json
 
-    url = _IPAPI_URL.format(ip="json")
     try:
         if proxies:
             proxy_handler = urllib.request.ProxyHandler(proxies)
@@ -95,12 +98,18 @@ def _fetch_ipapi(proxies: Optional[dict], timeout: int) -> Optional[dict]:
         else:
             opener = urllib.request.build_opener()
 
-        req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
+        req = urllib.request.Request(_IPAPI_URL, headers={"User-Agent": "curl/7.88.1"})
         with opener.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             data = json.loads(raw)
-            if "ip" in data:
+            # ipapi.co's error responses (rate-limited, invalid target, etc.)
+            # still include an "ip" key sometimes (e.g. echoing back a bad
+            # input), so checking for that alone isn't a reliable success
+            # signal — explicitly reject anything carrying an "error" flag
+            # rather than silently treating it as a healthy, unflagged IP.
+            if "ip" in data and not data.get("error"):
                 return data
+            logger.debug("ipapi.co returned an error payload: %s", data)
     except Exception as e:
         logger.debug("ipapi.co failed: %s", e)
     return None

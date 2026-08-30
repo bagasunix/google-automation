@@ -124,20 +124,36 @@ func ImportCSV(filePath string) ([]GscEntry, error) {
 }
 
 // SyncGscWithDatabase updates article ranking and opportunity weights in DB.
+//
+// A GSC export has one row per (page, query) pair, so a page with several
+// tracked queries appears several times — this aggregates to the single
+// highest OpportunityScore per page (the best keyword opportunity for that
+// page) rather than summing across rows, so pages with many tracked queries
+// don't get an inflated score purely for having more rows.
 func SyncGscWithDatabase(db *storage.DB, entries []GscEntry) (int, error) {
-	updated := 0
+	bestByURL := make(map[string]GscEntry)
 	for _, entry := range entries {
 		if entry.PageURL == "" {
+			continue
+		}
+		if existing, ok := bestByURL[entry.PageURL]; !ok || entry.OpportunityScore > existing.OpportunityScore {
+			bestByURL[entry.PageURL] = entry
+		}
+	}
+
+	updated := 0
+	for url, entry := range bestByURL {
+		if err := db.UpdateArticleOpportunityScoreByURL(url, entry.OpportunityScore); err != nil {
 			continue
 		}
 		// Match article by URL suffix or exact match
 		pos := int(entry.Position)
 		if pos > 0 {
-			err := db.UpdateArticleSerpPositionByURL(entry.PageURL, pos)
-			if err == nil {
-				updated++
+			if err := db.UpdateArticleSerpPositionByURL(url, pos); err != nil {
+				continue
 			}
 		}
+		updated++
 	}
 	return updated, nil
 }

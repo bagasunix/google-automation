@@ -15,6 +15,7 @@ type Proxy struct {
 	Timezone        string
 	Username        string
 	Password        string
+	APIKeyIndex     int
 	Active          bool
 	LatencyMs       int
 	UsedCount       int
@@ -26,17 +27,18 @@ type Proxy struct {
 
 // Article represents a row in the articles table.
 type Article struct {
-	ID              int64
-	Domain          string
-	URL             string
-	Title           string
-	MetaDesc        string
-	Topic           string
-	SearchedCount   int
-	LastSearchedAt  sql.NullTime
-	FirstSearchedAt sql.NullTime
-	SerpPosition    sql.NullInt64
-	CreatedAt       time.Time
+	ID               int64
+	Domain           string
+	URL              string
+	Title            string
+	MetaDesc         string
+	Topic            string
+	SearchedCount    int
+	LastSearchedAt   sql.NullTime
+	FirstSearchedAt  sql.NullTime
+	SerpPosition     sql.NullInt64
+	OpportunityScore float64
+	CreatedAt        time.Time
 }
 
 // Task represents a row in the tasks table.

@@ -19,6 +19,7 @@ type Config struct {
 	Bandwidth         BandwidthConfig   `yaml:"bandwidth"`
 	ArticleCollection ArticleCollection `yaml:"article_collection"`
 	Telegram          TelegramConfig    `yaml:"telegram"`
+	Gsc               GscConfig         `yaml:"gsc"`
 }
 
 // TelegramConfig configures the optional Telegram daily-summary notification.
@@ -26,6 +27,22 @@ type TelegramConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	BotToken string `yaml:"bot_token"`
 	ChatID   string `yaml:"chat_id"`
+}
+
+// GscConfig points at an (optional) Google Search Console performance CSV
+// export, used to weight article selection toward real high-opportunity
+// pages (high impressions, low CTR, rank 4-20 — see internal/gsc). Empty
+// CsvPath disables this entirely; article selection falls back to its
+// existing SERP-position-tier weighting.
+type GscConfig struct {
+	CsvPath string `yaml:"csv_path"`
+	// WeightMultiplier scales how strongly the top-opportunity article's
+	// selection weight gets boosted relative to the SERP-position-tier
+	// baseline. At the default (10), the single best-scoring eligible
+	// article gets up to 11x its tier weight; a low value like 1 makes the
+	// boost barely register against a pool of 100+ articles. <= 0 falls
+	// back to the default.
+	WeightMultiplier float64 `yaml:"weight_multiplier"`
 }
 
 // EngineRatio defines the traffic source distribution split.

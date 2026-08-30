@@ -18,6 +18,7 @@ type HealthResult struct {
 	BandwidthExhausted  bool
 	Latency             time.Duration
 	Country             string
+	Timezone            string // real IANA timezone from DetectGeoIP, e.g. "Europe/Berlin"
 	IPRemote            string // detected external IP through the proxy
 }
 
@@ -127,7 +128,7 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 		if resp.StatusCode == http.StatusOK {
 			result.Latency = time.Since(start)
 			result.Healthy = true
-			result.Country = detectCountry(p.IP)
+			result.Country, result.Timezone = DetectGeoIP(p.IP)
 			result.IPRemote = p.IP
 			return result
 		}
@@ -138,7 +139,7 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 			result.Latency = time.Since(start)
 			result.Healthy = true
 			result.BandwidthExhausted = true
-			result.Country = detectCountry(p.IP)
+			result.Country, result.Timezone = DetectGeoIP(p.IP)
 			result.IPRemote = p.IP
 			fmt.Printf("[proxy-health] %s:%d bandwidth exhausted (402) — marking available, bw-tracker will skip\n", p.IP, p.Port)
 			return result
@@ -183,10 +184,4 @@ func DetectGeoIP(ip string) (string, string) {
 		tz = "UTC"
 	}
 	return country, tz
-}
-
-// detectCountry is a backward-compatible wrapper returning the country code/name.
-func detectCountry(ip string) string {
-	c, _ := DetectGeoIP(ip)
-	return c
 }

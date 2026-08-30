@@ -18,6 +18,7 @@ from browser.humanizer import (
     random_pause,
     random_mouse_jitter,
 )
+from browser import bandwidth
 
 logger = logging.getLogger("worker.engagement.click")
 
@@ -112,6 +113,7 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
                         random_pause(2, 6)
 
                     # Close new tab and return to main
+                    bandwidth.accumulate(sb)  # capture the new tab's page before it's gone
                     sb.driver.close()
                     sb.switch_to_window(0)
                     time.sleep(1.0)
@@ -119,6 +121,7 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
                     continue
 
             logger.info("Clicking internal link (same tab): %s", text)
+            bandwidth.accumulate(sb)  # capture current article before leaving it
             human_click_element(sb, link)
             sb.wait_for_ready_state_complete(timeout=15)
             random_pause(1.5, 3.0)
@@ -139,6 +142,7 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
             random_pause(3, 8)
             clicked += 1
 
+            bandwidth.accumulate(sb)  # capture the internal page before returning
             sb.go_back()
             try:
                 sb.wait_for_ready_state_complete(timeout=15)
@@ -152,8 +156,8 @@ def simulate_internal_clicks(sb, target_domain: str) -> int:
             try:
                 if len(sb.driver.window_handles) > 1:
                     sb.switch_to_window(0)
-                if domain not in sb.get_current_url():
-                    sb.open(original_url)
+                if target_domain not in sb.get_current_url():
+                    bandwidth.navigate(sb, original_url, target=True)
             except Exception:
                 pass
 

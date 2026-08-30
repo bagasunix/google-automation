@@ -262,15 +262,41 @@ def _pick_ua_for_locale(locale: str) -> str:
 
     return random.choice(USER_AGENTS)
 
-# WebGL renderer / vendor pairs (common real GPUs)
-WEBGL_CONFIGS = [
+# WebGL renderer / vendor pairs (common real GPUs), split by platform —
+# these MUST be picked to match the platform/UA already chosen for the
+# profile, not randomly: Direct3D11-backed ANGLE renderers only exist on
+# Windows, Metal-backed ones only on Apple platforms, real phones report
+# mobile GPU vendors (Adreno/Mali/Apple GPU), never a desktop gaming card.
+# A profile claiming "Macintosh" in its UA but reporting a Direct3D11
+# renderer (or a "phone" reporting an RTX 3060) is exactly the kind of
+# cross-fingerprint mismatch automated-traffic detection is built to catch —
+# confirmed live 2026-08-30 that the single flat list below was previously
+# chosen with no regard for platform at all.
+WEBGL_CONFIGS_WINDOWS = [
     {"vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)"},
     {"vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Ti Direct3D11 vs_5_0 ps_5_0)"},
     {"vendor": "Google Inc. (AMD)", "renderer": "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)"},
     {"vendor": "Google Inc. (AMD)", "renderer": "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0)"},
     {"vendor": "Google Inc. (Intel)", "renderer": "ANGLE (Intel, Intel(R) UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0)"},
     {"vendor": "Google Inc. (Intel)", "renderer": "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0)"},
+]
+WEBGL_CONFIGS_MAC = [
     {"vendor": "Google Inc. (Apple)", "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)"},
+    {"vendor": "Google Inc. (Apple)", "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"},
+    {"vendor": "Google Inc. (Apple)", "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)"},
+]
+WEBGL_CONFIGS_LINUX = [
+    {"vendor": "Google Inc. (Intel)", "renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)"},
+    {"vendor": "Google Inc. (NVIDIA Corporation)", "renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce GTX 1660/PCIe/SSE2, OpenGL 4.6.0 NVIDIA 535.129.03)"},
+    {"vendor": "Google Inc. (AMD)", "renderer": "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi, navi23, LLVM 15.0.7), OpenGL 4.6)"},
+]
+WEBGL_CONFIGS_ANDROID = [
+    {"vendor": "Qualcomm", "renderer": "Adreno (TM) 640"},
+    {"vendor": "Qualcomm", "renderer": "Adreno (TM) 730"},
+    {"vendor": "ARM", "renderer": "Mali-G78 MP20"},
+]
+WEBGL_CONFIGS_IOS = [
+    {"vendor": "Apple Inc.", "renderer": "Apple GPU"},
 ]
 
 # Screen colour depths
@@ -303,6 +329,7 @@ class StealthProfile:
     platform: str = "Win32"
     is_mobile: bool = False
     max_touch_points: int = 0
+    canvas_noise_seed: int = 1
 
     @classmethod
     def random(cls, is_mobile: bool | None = None) -> "StealthProfile":
@@ -324,19 +351,29 @@ class StealthProfile:
         if is_mobile:
             ua = random.choice(MOBILE_USER_AGENTS)
             vp = random.choice(MOBILE_VIEWPORTS)
-            platform = "Linux armv8l" if "Android" in ua else "iPhone"
+            is_android = "Android" in ua
+            platform = "Linux armv8l" if is_android else "iPhone"
             max_touch = 5
             dpr = random.choice([2.0, 3.0])
             hw_conc = random.choice([6, 8])
+            webgl_pool = WEBGL_CONFIGS_ANDROID if is_android else WEBGL_CONFIGS_IOS
         else:
             ua = _pick_ua_for_locale(loc)
             vp = random.choice(VIEWPORTS)
-            platform = "Win32" if "Windows" in ua else ("MacIntel" if "Macintosh" in ua else "Linux x86_64")
+            if "Windows" in ua:
+                platform, webgl_pool = "Win32", WEBGL_CONFIGS_WINDOWS
+            elif "Macintosh" in ua:
+                platform, webgl_pool = "MacIntel", WEBGL_CONFIGS_MAC
+            else:
+                platform, webgl_pool = "Linux x86_64", WEBGL_CONFIGS_LINUX
             max_touch = 0
             dpr = random.choice(DEVICE_PIXEL_RATIOS)
             hw_conc = random.choice(HARDWARE_CONCURRENCIES)
 
-        webgl = random.choice(WEBGL_CONFIGS)
+        # Pick a WebGL vendor/renderer consistent with the platform already
+        # chosen above — see the WEBGL_CONFIGS_* comment for why this can't
+        # be a platform-independent random.choice() across the whole pool.
+        webgl = random.choice(webgl_pool)
         color_depth = random.choice(COLOR_DEPTHS)
 
         return cls(
@@ -352,6 +389,9 @@ class StealthProfile:
             platform=platform,
             is_mobile=is_mobile,
             max_touch_points=max_touch,
+            # 1..255: must be non-zero, or XOR-ing with it is a no-op and
+            # the canvas noise injection silently does nothing at all.
+            canvas_noise_seed=random.randint(1, 255),
         )
 
 
@@ -508,35 +548,72 @@ try {{
 }} catch (e) {{}}
 
 // 7. Canvas noise injection
-// Adds a tiny, deterministic-per-session noise to canvas pixel data
-// so the fingerprint changes without being visually noticeable.
+// Adds a tiny, per-session-random noise to canvas pixel data so the
+// fingerprint changes without being visually noticeable — WITHOUT ever
+// writing the noised data back onto the real canvas. The noise is derived
+// fresh from the canvas's own unmodified pixel data on every call, so
+// repeated toDataURL()/getImageData() calls on unchanged canvas content
+// stay stable and consistent with each other, matching how a real (if
+// slightly different) browser/GPU would behave.
+//
+// Two earlier, both-broken versions of this: (1) toDataURL() re-applied
+// the SAME noise byte a second time on top of what its own call to the
+// (already-patched) getImageData had just applied — since X^N^N == X,
+// that silently cancelled the noise back to the exact original value for
+// this, the single most common canvas-fingerprinting API. (2) fixing that
+// by writing the once-noised copy back onto the real canvas via
+// putImageData instead introduced something worse: since the SOURCE
+// canvas itself was now mutated, a second toDataURL()/getImageData() call
+// on that already-noised canvas applied the same XOR again, flipping it
+// straight back to the original value — an OSCILLATING fingerprint across
+// repeated reads of unchanged content, which is an even more obvious
+// automation tell than a silently-inert patch, since real canvas
+// rendering is always deterministic for unchanged content. Confirmed live
+// 2026-08-30 (calling toDataURL() once after reading noised pixel data
+// flipped the canvas's own buffer straight back to the pre-noise value).
+// This version never calls putImageData() on the real canvas at all:
+// getImageData() returns a noised COPY; toDataURL() draws a noised copy
+// onto a disposable off-screen canvas and encodes THAT instead — the
+// source canvas's actual pixel buffer is never touched either way.
 try {{
-    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-    HTMLCanvasElement.prototype.toDataURL = function(...args) {{
-        const ctx = this.getContext('2d');
-        if (ctx) {{
-            const w = this.width;
-            const h = this.height;
-            try {{
-                const imageData = ctx.getImageData(0, 0, Math.max(w, 1), Math.max(h, 1));
-                // Apply subtle noise to a few pixels
-                for (let i = 0; i < imageData.data.length; i += 4 * 100) {{
-                    imageData.data[i] = imageData.data[i] ^ 1;  // flip LSB on red channel
-                }}
-                ctx.putImageData(imageData, 0, 0);
-            }} catch (e) {{}}
+    const NOISE = {profile.canvas_noise_seed};
+
+    function _noisyCopy(original) {{
+        const copy = new ImageData(
+            new Uint8ClampedArray(original.data), original.width, original.height
+        );
+        for (let i = 0; i < copy.data.length; i += 4 * 100) {{
+            copy.data[i] = copy.data[i] ^ NOISE;
         }}
-        return originalToDataURL.apply(this, args);
-    }};
+        return copy;
+    }}
 
     const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
     CanvasRenderingContext2D.prototype.getImageData = function(...args) {{
-        const imageData = originalGetImageData.apply(this, args);
-        // Apply noise to every Nth pixel
-        for (let i = 0; i < imageData.data.length; i += 4 * 100) {{
-            imageData.data[i] = imageData.data[i] ^ 1;
-        }}
-        return imageData;
+        return _noisyCopy(originalGetImageData.apply(this, args));
+    }};
+
+    const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {{
+        try {{
+            const ctx = this.getContext('2d');
+            if (ctx) {{
+                const w = this.width;
+                const h = this.height;
+                // Read via the ORIGINAL getImageData (not the patched one
+                // above) to avoid double-noising, then noise a copy and
+                // draw it onto a throwaway canvas — the real canvas this
+                // was called on is never mutated.
+                const original = originalGetImageData.call(ctx, 0, 0, Math.max(w, 1), Math.max(h, 1));
+                const noised = _noisyCopy(original);
+                const tmp = document.createElement('canvas');
+                tmp.width = w;
+                tmp.height = h;
+                tmp.getContext('2d').putImageData(noised, 0, 0);
+                return originalToDataURL.apply(tmp, args);
+            }}
+        }} catch (e) {{}}
+        return originalToDataURL.apply(this, args);
     }};
 }} catch (e) {{}}
 

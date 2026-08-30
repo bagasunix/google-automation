@@ -69,21 +69,35 @@ type SelectedArticle struct {
 	Query        string
 }
 
+const defaultGscWeightMultiplier = 10.0
+
 // Queue manages article selection with randomization and search-method variation.
 type Queue struct {
-	db        *storage.DB
-	articles  []storage.Article
-	collector *Collector
-	extractor *Extractor
+	db                  *storage.DB
+	articles            []storage.Article
+	collector           *Collector
+	extractor           *Extractor
+	gscWeightMultiplier float64
 }
 
 // NewQueue creates an article queue backed by the database.
 func NewQueue(db *storage.DB) *Queue {
 	return &Queue{
-		db:        db,
-		collector: NewCollector(),
-		extractor: NewExtractor(),
+		db:                  db,
+		collector:           NewCollector(),
+		extractor:           NewExtractor(),
+		gscWeightMultiplier: defaultGscWeightMultiplier,
 	}
+}
+
+// SetGscWeightMultiplier configures how strongly PickRandom boosts the
+// top GSC-opportunity-scoring eligible article (see config.GscConfig). A
+// value <= 0 resets it to the default.
+func (q *Queue) SetGscWeightMultiplier(m float64) {
+	if m <= 0 {
+		m = defaultGscWeightMultiplier
+	}
+	q.gscWeightMultiplier = m
 }
 
 // RefreshArticles re-scrapes all configured domains for articles and persists
@@ -187,9 +201,15 @@ func (q *Queue) LoadFromDB() error {
 }
 
 // PickRandom selects an eligible article using the Smart Keyword Priority Matrix:
-// - Page 2 & 3 articles (position 11-30) get 3x higher weight (page 1 breakthrough boost).
-// - Unranked/new articles (position 0) get 2x weight (discovery).
-// - Page 1 articles (position 1-10) get 1x weight (maintenance).
+//   - Page 2 & 3 articles (position 11-30) get 3x higher weight (page 1 breakthrough boost).
+//   - Unranked/new articles (position 0) get 2x weight (discovery).
+//   - Page 1 articles (position 1-10) get 1x weight (maintenance).
+//   - On top of that tier, articles with a GSC-derived OpportunityScore (see
+//     internal/gsc — high impressions, low CTR, rank 4-20) get an additional
+//     boost proportional to their score relative to the best-scoring eligible
+//     article this round, scaled by gscWeightMultiplier (config: gsc.weight_multiplier,
+//     default 10x). Articles with no GSC data (the default when gsc.csv_path
+//     isn't configured) score 0 and are unaffected.
 func (q *Queue) PickRandom(cfg *config.SchedulerConfig) (*SelectedArticle, bool) {
 	if len(q.articles) == 0 {
 		return nil, false
@@ -205,6 +225,13 @@ func (q *Queue) PickRandom(cfg *config.SchedulerConfig) (*SelectedArticle, bool)
 
 	if len(eligible) == 0 {
 		return nil, false
+	}
+
+	maxOpportunity := 0.0
+	for _, a := range eligible {
+		if a.OpportunityScore > maxOpportunity {
+			maxOpportunity = a.OpportunityScore
+		}
 	}
 
 	// Smart Priority Weighting
@@ -229,6 +256,12 @@ func (q *Queue) PickRandom(cfg *config.SchedulerConfig) (*SelectedArticle, bool)
 		} else if pos >= 1 && pos <= 10 {
 			w = 10 // 1x maintenance
 		}
+
+		if maxOpportunity > 0 {
+			opportunityBoost := a.OpportunityScore / maxOpportunity // 0..1
+			w = int(float64(w) * (1 + opportunityBoost*q.gscWeightMultiplier))
+		}
+
 		weighted = append(weighted, weightedItem{art: a, weight: w})
 		totalWeight += w
 	}

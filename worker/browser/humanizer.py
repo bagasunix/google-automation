@@ -27,17 +27,24 @@ ADJACENT_KEYS = {
 }
 
 
-def type_humanized(sb, selector: str, text: str, typo_chance: float = 0.04) -> None:
+def type_humanized(sb, selector: str, text: str, typo_chance: float = 0.04, clear_first: bool = True) -> None:
+    """
+    clear_first=False is for continuing a query already partially typed into
+    the same field (e.g. the two-call "autocomplete hijack" split in
+    search/google.py) — clearing here would silently wipe out what the
+    earlier call already typed, leaving only the second half in the box.
+    """
     logger.info("Human typing into '%s': %s", selector, text[:60])
 
     sb.click(selector)
     time.sleep(random.uniform(0.2, 0.4))
 
-    try:
-        sb.clear(selector)
-    except Exception:
-        pass
-    time.sleep(random.uniform(0.1, 0.25))
+    if clear_first:
+        try:
+            sb.clear(selector)
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.1, 0.25))
 
     for char in text:
         # Simulate occasional human typo
@@ -67,13 +74,33 @@ def type_humanized(sb, selector: str, text: str, typo_chance: float = 0.04) -> N
             except Exception:
                 pass
 
-        try:
-            sb.add_text(selector, char)
-        except Exception:
+        # Google's own autocomplete dropdown opens and reflows the search
+        # box WHILE typing is in progress, which can transiently make the
+        # input element briefly non-interactable mid-word (confirmed live
+        # 2026-08-30: all three fallback methods below threw
+        # ElementNotInteractableException on the same character, and since
+        # this loop had no outer retry, the exception propagated all the
+        # way up and killed the entire search attempt over one flaky
+        # keystroke). Retry once after a short pause — the reflow is
+        # momentary — and if it still fails, skip that one character rather
+        # than aborting everything typed so far.
+        for typing_attempt in range(2):
             try:
-                sb.send_keys(selector, char)
+                sb.add_text(selector, char)
+                break
             except Exception:
-                sb.type(selector, char)
+                try:
+                    sb.send_keys(selector, char)
+                    break
+                except Exception:
+                    try:
+                        sb.type(selector, char)
+                        break
+                    except Exception:
+                        if typing_attempt == 0:
+                            time.sleep(random.uniform(0.3, 0.6))
+                        else:
+                            logger.debug("Skipping unreachable character %r after retry", char)
 
         # Realistic typing speed variation (40ms - 150ms per keystroke)
         time.sleep(random.uniform(0.04, 0.14))

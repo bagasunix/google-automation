@@ -61,19 +61,23 @@ def _check_session_alive(exc: Exception) -> None:
 def _is_doscaptcha(sb) -> bool:
     """Check if Google has blocked the audio challenge due to automated queries detection."""
     try:
-        # IIFE, no leading `return` — execute_script() under CDP mode only
-        # strips `return` from the script's last line; the earlier early-exit
-        # `return true;` was illegal raw JS, throwing a SyntaxError that made
-        # this ALWAYS report "no doscaptcha block" even when Google's hard
-        # "automated queries" block was actually showing.
-        return sb.execute_script("""
-            (function() {
+        # This ALSO always reported "no doscaptcha block" via the classic
+        # (non-CDP) Selenium path — a bare IIFE call with no leading
+        # `return` returns None to Python there, not just under the CDP
+        # mode this comment originally called out. Explicitly returning the
+        # IIFE's result on its own final line works under both dispatch
+        # paths (see solver.py's detect_recaptcha_version for the full
+        # explanation).
+        result = sb.execute_script("""
+            var __result = (function() {
                 const msg = document.querySelector('.rc-doscaptcha-body, .rc-doscaptcha-header, div[class*="doscaptcha"]');
                 if (msg && msg.innerText && msg.innerText.length > 0) return true;
                 const text = document.body ? document.body.innerText : '';
                 return text.includes("automated queries") || text.includes("can't process your request");
             })();
+            return __result;
         """)
+        return bool(result)
     except Exception as e:
         _check_session_alive(e)
         return False
@@ -168,14 +172,22 @@ def _click_audio_button(sb) -> bool:
 
 def _get_audio_src(sb) -> str | None:
     try:
-        # IIFE, no leading `return` — this had FIVE early returns before the
-        # final `return null;`, all illegal raw JS under execute_script()'s
-        # CDP mode (which only strips `return` from the last line). This
-        # function has been throwing a SyntaxError and returning None on
-        # every single call — the audio challenge URL was never actually
-        # found, regardless of whether Google served one.
+        # This had FIVE early returns before the final `return null;` — a
+        # prior fix wrapped them in an IIFE to make those internal returns
+        # legal under CDP mode's execute_script(), but the IIFE call itself
+        # had no leading `return`, which fixed the CDP-mode path while
+        # leaving the classic (non-CDP, default/common) Selenium path
+        # completely broken the whole time: that path needs a literal
+        # top-level `return` or nothing comes back to Python at all — a bare
+        # IIFE call silently returns None there, not an error. So this
+        # function has still been returning None on every call under normal
+        # operation (no driver disconnect) — the audio challenge URL was
+        # never actually found regardless of whether Google served one.
+        # Assigning the IIFE's result to a var and returning it on its own
+        # final line satisfies both dispatch paths (CDP strips "return "
+        # from that line; classic Selenium keeps and needs it).
         return sb.execute_script("""
-            (function() {
+            var __result = (function() {
                 // 1. Audio tag src
                 const a = document.querySelector('audio');
                 if (a && a.src && a.src.startsWith('http')) return a.src;
@@ -197,6 +209,7 @@ def _get_audio_src(sb) -> str | None:
                 }
                 return null;
             })();
+            return __result;
         """)
     except Exception as e:
         _check_session_alive(e)
@@ -205,9 +218,20 @@ def _get_audio_src(sb) -> str | None:
 
 
 def _download_audio(sb, audio_src: str) -> bytes | None:
-    # Try direct requests download first — reCAPTCHA audio URLs are signed
+    # Try direct requests download first — reCAPTCHA audio URLs are signed.
+    # MUST go through the same proxy as the browser session (session.py
+    # stashes it on sb.proxies) — without it, this request reaches Google's
+    # audio CDN from this machine's own direct IP while the active browsing
+    # session (and the CAPTCHA challenge itself) is on a completely
+    # different IP with no shared cookies, which is exactly the kind of
+    # identity mismatch automated-traffic detection looks for.
     try:
-        resp = req.get(audio_src, headers={"User-Agent": UA}, timeout=15)
+        resp = req.get(
+            audio_src,
+            headers={"User-Agent": getattr(sb, "real_user_agent", None) or UA},
+            proxies=getattr(sb, "proxies", None),
+            timeout=15,
+        )
         if resp.status_code == 200 and len(resp.content) > 500:
             logger.info("audio downloaded via direct requests: %d bytes", len(resp.content))
             return resp.content

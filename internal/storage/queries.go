@@ -14,16 +14,17 @@ import (
 // UpsertProxy inserts a proxy or updates it if the (ip, port, username) pair already exists.
 func (db *DB) UpsertProxy(p *Proxy) (int64, error) {
 	res, err := db.conn.Exec(
-		`INSERT INTO proxies (ip, port, protocol, country, timezone, username, password, active, latency_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+		`INSERT INTO proxies (ip, port, protocol, country, timezone, username, password, api_key_index, active, latency_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
 		 ON CONFLICT(ip, port, username) DO UPDATE SET
 		   protocol=excluded.protocol,
 		   country=excluded.country,
 		   timezone=excluded.timezone,
 		   password=excluded.password,
+		   api_key_index=excluded.api_key_index,
 		   active=1,
 		   latency_ms=excluded.latency_ms`,
-		p.IP, p.Port, p.Protocol, p.Country, p.Timezone, p.Username, p.Password, p.LatencyMs,
+		p.IP, p.Port, p.Protocol, p.Country, p.Timezone, p.Username, p.Password, p.APIKeyIndex, p.LatencyMs,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("upsert proxy %s:%d:%s: %w", p.IP, p.Port, p.Username, err)
@@ -159,7 +160,7 @@ func (db *DB) AllArticles() ([]Article, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, domain, url, title, meta_desc, topic,
 		        searched_count, last_searched_at, first_searched_at,
-		        serp_position, created_at
+		        serp_position, COALESCE(opportunity_score, 0), created_at
 		 FROM articles`,
 	)
 	if err != nil {
@@ -173,7 +174,7 @@ func (db *DB) AllArticles() ([]Article, error) {
 		if err := rows.Scan(
 			&a.ID, &a.Domain, &a.URL, &a.Title, &a.MetaDesc, &a.Topic,
 			&a.SearchedCount, &a.LastSearchedAt, &a.FirstSearchedAt,
-			&a.SerpPosition, &a.CreatedAt,
+			&a.SerpPosition, &a.OpportunityScore, &a.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -238,6 +239,18 @@ func (db *DB) UpdateArticleSerpPositionByURL(rawURL string, serpPosition int) er
 		 SET serp_position = ?
 		 WHERE url = ? OR url LIKE ?`,
 		serpPosition, rawURL, "%"+strings.TrimPrefix(rawURL, "https://")+"%",
+	)
+	return err
+}
+
+// UpdateArticleOpportunityScoreByURL updates the GSC-derived opportunity score
+// of an article matching URL (see gsc.CalculateOpportunityScore).
+func (db *DB) UpdateArticleOpportunityScoreByURL(rawURL string, score float64) error {
+	_, err := db.conn.Exec(
+		`UPDATE articles
+		 SET opportunity_score = ?
+		 WHERE url = ? OR url LIKE ?`,
+		score, rawURL, "%"+strings.TrimPrefix(rawURL, "https://")+"%",
 	)
 	return err
 }

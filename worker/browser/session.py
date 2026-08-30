@@ -133,6 +133,35 @@ class SBSession:
         self._sb_ctx = SB(**kwargs)
         self._sb = self._sb_ctx.__enter__()
 
+        # Stash proxy config (requests-library format) on the sb object so
+        # any code holding `sb` — e.g. captcha/audio_sorry.py's direct
+        # requests.get() download of the reCAPTCHA audio file — can route
+        # through the SAME egress IP the browser session (and Google's
+        # CAPTCHA challenge) are using, instead of silently falling back to
+        # this machine's own direct connection. See browser.humanizer
+        # module docs / session notes: a raw HTTP request arriving at
+        # Google's audio CDN from a different IP than the one serving the
+        # active browsing session, with no shared cookies, is exactly the
+        # kind of identity-inconsistency signal automated-traffic detection
+        # is built to catch — and was happening on every single audio
+        # download attempt before this.
+        if self.proxy_ip and self.proxy_port:
+            if self.proxy_username and self.proxy_password:
+                proxy_url = (
+                    f"{self.proxy_scheme}://{self.proxy_username}:{self.proxy_password}"
+                    f"@{self.proxy_ip}:{self.proxy_port}"
+                )
+            else:
+                proxy_url = f"{self.proxy_scheme}://{self.proxy_ip}:{self.proxy_port}"
+            self._sb.proxies = {"http": proxy_url, "https": proxy_url}
+        else:
+            self._sb.proxies = None
+
+        # Same idea for User-Agent — direct requests.get() calls (e.g. the
+        # audio CAPTCHA download) should present the SAME UA the browser
+        # session is actually using, not an unrelated hardcoded one.
+        self._sb.real_user_agent = self.profile.user_agent
+
         # Inject CDP stealth script (Canvas noise, WebGL, navigator overrides)
         apply_stealth_to_sb(self._sb, self.profile)
 

@@ -1,13 +1,18 @@
 """browser/bandwidth.py
 ====================
-Bandwidth tracking + aggressive resource blocking for proxy bandwidth conservation.
+Bandwidth tracking + CDP-level resource blocking for proxy bandwidth conservation.
 
 Webshare free plan = 1GB/month per API key.
-Each search task uses ~2-4MB depending on resource blocking.
 
 This module provides:
   - BandwidthTracker: track bytes transferred per API key, persist to JSON
-  - aggressive_resource_blocker: block images/media/video/fonts > threshold KB
+  - set_network_blocking: CDP Network.setBlockedURLs — block images/media/fonts
+    on non-target pages (Google/Bing/competitors), keep full resources on
+    target domains for realistic engagement
+  - accumulate / get_total_kb: real per-task bandwidth measurement via the
+    browser's own Resource Timing API (sb.execute_script), read right before
+    each navigation since the performance timeline is scoped to the current
+    document
   - get_bandwidth_status: check remaining quota before starting a task
   - find_available_api_key: find first key with remaining bandwidth
 
@@ -225,128 +230,171 @@ def find_available_api_key(num_keys: int) -> Optional[int]:
     return None
 
 
-def _load_domains() -> list[str]:
-    """Load target domains from config.yaml — these get full resource access."""
-    try:
-        import yaml
-        config_path = os.path.expanduser("~/Project/google-automation/config/config.yaml")
-        with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-        return [d.lower().lstrip("www.") for d in cfg.get("domains", [])]
-    except Exception:
-        return []
-
-
-def _is_target_url(url: str, target_domains: list[str]) -> bool:
-    """Check if a URL belongs to one of the target domains."""
-    if not url or not target_domains:
-        return False
-    try:
-        from urllib.parse import urlparse
-        host = urlparse(url).netloc.lower().lstrip("www.")
-        return any(d in host or host in d for d in target_domains)
-    except Exception:
-        return False
-
-
-async def aggressive_resource_blocker(context, block_images: bool = None) -> None:
+def set_network_blocking(sb, target: bool) -> None:
     """
-    URL-aware resource blocking for bandwidth conservation.
+    CDP-level URL blocking for bandwidth conservation.
 
     Strategy:
-      - On TARGET domains (bagasunix.com): allow ALL resources (full realism
-        for engagement — images, CSS, fonts, everything loads).
-      - On NON-target sites (Google, Bing, competitor, distraction): block
-        aggressively (fonts, media, video, audio, images, stylesheets).
+      - target=True (on/about to load a configured target domain, e.g.
+        bagasunix.com): only block fonts + media — keep images and CSS for
+        realistic engagement (scroll depth, reading simulation).
+      - target=False (Google/Bing SERP, competitor pages, distraction sites):
+        also block images (+ CSS if configured) — these pages are only
+        viewed for seconds and don't need full rendering.
 
-    This saves ~60-70% bandwidth because Google/Bing SERP pages and
-    competitor articles are loaded briefly and don't need full rendering.
-    The target article is where we spend bandwidth for realistic engagement.
+    Applied via CDP Network.setBlockedURLs (glob patterns) through the
+    classic Selenium driver underneath SeleniumBase's uc=True session.
+    driver.execute_cdp_cmd() is a one-shot CDP call, unaffected by the
+    execute_script()-under-CDP-mode quirks documented in humanizer.py.
 
-    Reads config from config.yaml bandwidth: + domains sections.
+    Call this BEFORE the navigation it should apply to — Chrome applies the
+    block list to requests made after it's set, not retroactively. Reads
+    config from config.yaml bandwidth: section.
     """
     cfg = _load_bandwidth_config()
-    target_domains = _load_domains()
-
-    if block_images is None:
-        block_images = cfg.get("block_images", False)
-    block_media = cfg.get("block_media", True)
     block_fonts = cfg.get("block_fonts", True)
+    block_media = cfg.get("block_media", True)
     block_stylesheets = cfg.get("block_stylesheets", False)
 
-    # Non-target blocked types: block everything configurable
-    non_target_blocked = set()
+    exts: list[str] = []
     if block_fonts:
-        non_target_blocked.add("font")
+        exts += ["woff", "woff2", "ttf", "otf", "eot"]
     if block_media:
-        non_target_blocked.update({"media", "video", "audio"})
-    if block_stylesheets:
-        non_target_blocked.add("stylesheet")
-    # Images: on non-target sites, always block (SERP thumbnails don't matter)
-    non_target_blocked.add("image")
+        # Deliberately NOT mp3/wav/ogg — reCAPTCHA's audio challenge is
+        # served from a query-string endpoint (recaptcha/api2/payload?...)
+        # with no matching extension, so generic audio patterns would add
+        # blocking risk there for zero benefit.
+        exts += ["mp4", "webm", "ogv", "mov", "avi", "m3u8", "mpd"]
+    if not target:
+        exts += ["jpg", "jpeg", "png", "gif", "webp", "svg", "ico", "bmp", "avif"]
+        if block_stylesheets:
+            exts += ["css"]
 
-    # Target blocked types: only block what's explicitly configured
-    # Default: only fonts + media (keep images + CSS for realism)
-    target_blocked = set()
-    if block_fonts:
-        target_blocked.add("font")
-    if block_media:
-        target_blocked.update({"media", "video", "audio"})
-    # Don't block images or CSS on target — engagement realism
+    # Network.setBlockedURLs' `urls` (simple wildcard-string) parameter is
+    # DEPRECATED and — confirmed live against this project's actual Chrome
+    # build — a silent no-op; `urlPatterns` (URLPattern-spec syntax, e.g.
+    # "*://*:*/*.jpg") is the parameter that's actually still enforced.
+    patterns = [{"urlPattern": f"*://*:*/*.{ext}", "block": True} for ext in exts]
 
-    logger.info(
-        "URL-aware blocking: target=%s | non-target blocks=%s | target blocks=%s",
-        target_domains, non_target_blocked, target_blocked,
-    )
+    if not target:
+        # Extension-matching alone misses a lot of real Google/Bing SERP
+        # image traffic — their own thumbnail/favicon CDNs serve images from
+        # dynamic query-string endpoints with no file extension in the URL
+        # at all (e.g. encrypted-tbn0.gstatic.com/images?q=tbn:...). Block
+        # those by host+path instead, since (unlike a generic image
+        # extension) these hosts serve nothing BUT images/favicons — safe to
+        # block wholesale without risking the page's own scripts/CSS/fonts,
+        # which live on other paths/hosts (e.g. www.google.com, www.gstatic.com).
+        patterns += [
+            {"urlPattern": "*://encrypted-tbn*.gstatic.com:*/*", "block": True},  # Google Images/SERP thumbnails
+            {"urlPattern": "*://t*.gstatic.com:*/faviconV2*", "block": True},     # Google's favicon CDN
+            {"urlPattern": "*://www.google.com:*/s2/favicons*", "block": True},  # Google's older favicon proxy
+            {"urlPattern": "*://tse*.mm.bing.net:*/*", "block": True},           # Bing image thumbnails
+            {"urlPattern": "*://th.bing.com:*/*", "block": True},                # Bing image thumbnails (alt host)
+        ]
 
-    async def _block_resources(route):
-        url = route.request.url
-        rt = route.request.resource_type
-
-        # Never block reCAPTCHA resources — audio challenge download must go through
-        if "recaptcha" in url or "/sorry/" in url:
-            await route.continue_()
-            return
-
-        if _is_target_url(url, target_domains):
-            if rt in target_blocked:
-                await route.abort()
-            else:
-                await route.continue_()
-        else:
-            if rt in non_target_blocked:
-                await route.abort()
-            else:
-                await route.continue_()
-
-    await context.route("**/*", _block_resources)
+    try:
+        driver = getattr(sb, "driver", sb)
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setBlockedURLs", {"urlPatterns": patterns})
+        logger.debug("Network blocking set (target=%s): %d patterns", target, len(patterns))
+    except Exception as e:
+        logger.debug("set_network_blocking failed: %s", e)
 
 
-async def measure_task_bandwidth(context, callback=None) -> float:
+def navigate(sb, url: str, target: bool, timeout: int = 15) -> None:
     """
-    Measure bandwidth used during a browser session.
+    Navigate to `url` while keeping CDP network blocking in effect.
 
-    Attaches a response handler to count bytes received.
-    Returns total KB when session ends.
+    sb.open() under SeleniumBase's uc=True mode disconnects the classic
+    Selenium/chromedriver CDP session and re-navigates through a separate
+    async CDP connection (sb.cdp) instead — see base_case.py's open():
+    for a UC+CDP session it calls self.disconnect() then self.cdp.open().
+    That silently discards whatever Network.setBlockedURLs state was set via
+    driver.execute_cdp_cmd() on the old (now-disconnected) session, so a
+    block applied right before sb.open() never actually reaches the new
+    page's requests — confirmed live: a same-page click-triggered navigation
+    (human_click_element on an <a> tag) preserves the block correctly, but
+    sb.open() to the same URL does not.
+
+    Work around it by driving the navigation itself through the same raw CDP
+    session the block was set on (Page.navigate), instead of sb.open().
+    Falls back to sb.open() if the CDP navigate call itself fails for any
+    reason — better a page loads unblocked than not at all.
     """
-    total_bytes = 0
+    accumulate(sb)  # capture whatever page we're leaving before this nav
+    set_network_blocking(sb, target)
+    driver = getattr(sb, "driver", sb)
+    try:
+        driver.execute_cdp_cmd("Page.navigate", {"url": url})
+    except Exception as e:
+        logger.debug("Page.navigate failed, falling back to sb.open(): %s", e)
+        sb.open(url)
+        return
+    try:
+        sb.wait_for_ready_state_complete(timeout=timeout)
+    except Exception:
+        pass
 
-    async def on_response(response):
-        nonlocal total_bytes
-        try:
-            headers = response.headers
-            content_length = headers.get("content-length", "0")
-            if content_length and content_length.isdigit():
-                total_bytes += int(content_length)
-            elif response.ok:
-                body = await response.body()
-                total_bytes += len(body)
-        except Exception:
-            pass
 
-    context.on("response", on_response)
+# Deliberately a single line starting with "return ": SeleniumBase's
+# execute_script() takes one of two totally different paths depending on
+# driver state (see shared_utils.is_cdp_swap_needed) —
+#   - classic Selenium (driver connected, the common case): runs this text
+#     as a function body verbatim, so it MUST have a literal top-level
+#     "return" or nothing comes back to Python (confirmed live — an IIFE
+#     with no leading "return" silently returns None here, not an error).
+#   - CDP mode (driver disconnected — sb.cdp.evaluate()): strips "return "
+#     from the *last* line only if it starts with "return " (see the CDP
+#     execute_script gotcha noted elsewhere in this codebase), then evaluates
+#     the rest as a bare expression whose completion value comes back
+#     automatically. A leading "return " on a *multi-line* script would
+#     survive un-stripped there and throw "Illegal return statement".
+# One line satisfies both: classic path keeps "return " and needs it;
+# CDP path strips it from the (only) line and doesn't need it.
+# Resource Timing entries persist (and keep accumulating) until the page
+# navigates away OR performance.clearResourceTimings() is called — accumulate()
+# is called from many places (some pages, like the target article, get
+# multiple calls before their eventual navigation), so entries are cleared
+# after every read and the single per-page navigation entry is only ever
+# counted once (via a window-scoped flag that's naturally gone after the
+# next navigation) — otherwise a second call on the same page would double
+# (or triple-, ...) count bytes already reported.
+_TRANSFER_BYTES_JS = (
+    "return (function() { var total = 0; try { "
+    "if (!window.__bwNavCounted) { "
+    "var nav = performance.getEntriesByType('navigation'); "
+    "if (nav.length > 0) total += nav[0].transferSize || 0; "
+    "window.__bwNavCounted = true; "
+    "} "
+    "var res = performance.getEntriesByType('resource'); "
+    "for (var i = 0; i < res.length; i++) { total += res[i].transferSize || 0; } "
+    "performance.clearResourceTimings(); "
+    "} catch (e) {} return total; })();"
+)
 
-    if callback:
-        await callback()
 
-    return total_bytes / 1024  # KB
+def accumulate(sb) -> None:
+    """
+    Read real network bytes transferred on the currently-loaded page — via
+    the browser's own Resource Timing API, the same transferSize numbers
+    Chrome DevTools' Network tab shows — and add them to this session's
+    running total (stashed on the sb object itself, so callers scattered
+    across modules don't need to thread an accumulator through).
+
+    Call this right before any navigation away from the current page
+    (sb.open, sb.go_back, a click on a link) — the performance timeline is
+    scoped to the current document and is discarded on navigation, so
+    reading it any later loses the page's data entirely.
+    """
+    try:
+        n = sb.execute_script(_TRANSFER_BYTES_JS)
+        kb = float(n or 0) / 1024.0
+        sb._bw_total_kb = getattr(sb, "_bw_total_kb", 0.0) + kb
+    except Exception as e:
+        logger.debug("bandwidth accumulate failed: %s", e)
+
+
+def get_total_kb(sb) -> float:
+    """Total measured bandwidth (KB) accumulated on this session so far."""
+    return getattr(sb, "_bw_total_kb", 0.0)

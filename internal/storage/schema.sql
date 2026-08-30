@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS proxies (
     timezone TEXT,
     username TEXT DEFAULT '',
     password TEXT DEFAULT '',
+    api_key_index INTEGER DEFAULT 0,
     active INTEGER DEFAULT 1,
     latency_ms INTEGER,
     used_count INTEGER DEFAULT 0,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS articles (
     last_searched_at TIMESTAMP,
     first_searched_at TIMESTAMP,
     serp_position INTEGER,
+    opportunity_score REAL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

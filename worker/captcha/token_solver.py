@@ -52,10 +52,17 @@ def _load_config() -> dict:
 def _get_sitekey(sb) -> str:
     """Read sitekey from the live page; fall back to known Google sorry sitekey."""
     try:
-        sitekey = sb.execute_script(
-            "const el = document.querySelector('[data-sitekey]');"
-            "return el ? el.getAttribute('data-sitekey') : null;"
-        )
+        # Real newlines (not Python string concatenation) so the LAST line
+        # is a standalone `return ...;` — sb.execute_script() needs that
+        # literal return for the classic-Selenium path (the common case) to
+        # get anything back at all, while CDP mode's execute_script() only
+        # strips "return " from the last line, so a single-statement
+        # "return X;" is the one form that works correctly under both.
+        sitekey = sb.execute_script("""
+            var el = document.querySelector('[data-sitekey]');
+            var result = el ? el.getAttribute('data-sitekey') : null;
+            return result;
+        """)
         if sitekey:
             logger.info("sitekey from page: %s", sitekey)
             return sitekey
@@ -76,7 +83,7 @@ def _inject_token(sb, token: str) -> bool:
     """
     try:
         injected = sb.execute_script(f"""
-            (function() {{
+            var __result = (function() {{
                 // Set all g-recaptcha-response textareas (there may be more than one)
                 document.querySelectorAll('textarea[name="g-recaptcha-response"]').forEach(el => {{
                     el.innerHTML = '{token}';
@@ -116,7 +123,8 @@ def _inject_token(sb, token: str) -> bool:
                 if (form) {{ form.submit(); return 'form'; }}
 
                 return 'injected_only';
-            }})()
+            }})();
+            return __result;
         """)
         logger.info("token injection result: %s", injected)
         return True

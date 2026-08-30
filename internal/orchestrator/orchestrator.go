@@ -18,6 +18,7 @@ import (
 	"google-automation/internal/config"
 	grpcclient "google-automation/internal/grpc"
 	pb "google-automation/internal/grpc/proto"
+	"google-automation/internal/gsc"
 	"google-automation/internal/notify"
 	"google-automation/internal/proxy"
 	"google-automation/internal/scheduler"
@@ -51,6 +52,7 @@ type Orchestrator struct {
 func New(cfg *config.Config, db *storage.DB, grpcClient *grpcclient.Client) *Orchestrator {
 	proxyMgr := proxy.NewManager(&cfg.Proxy, db)
 	articleQ := article.NewQueue(db)
+	articleQ.SetGscWeightMultiplier(cfg.Gsc.WeightMultiplier)
 	sched := scheduler.New(cfg, db, proxyMgr)
 	cooldown := scheduler.NewCooldownManager(&cfg.Scheduler, db)
 	spread := scheduler.NewSpreadTracker(db)
@@ -118,6 +120,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			return fmt.Errorf("load articles from DB: %w", err)
 		}
 	}
+	o.syncGscData()
 	go o.articleRefreshLoop()
 
 	// Start the midnight daily-reset goroutine.
@@ -566,7 +569,33 @@ func (o *Orchestrator) articleRefreshLoop() {
 			if err := o.articleQ.RefreshArticles(o.cfg.Domains, o.cfg.ArticleCollection.MaxConcurrentFetches); err != nil {
 				log.Printf("[orchestrator] article refresh failed: %v", err)
 			}
+			o.syncGscData()
 		}
+	}
+}
+
+// syncGscData loads the configured GSC CSV export (if any) and syncs
+// opportunity scores + SERP positions into the articles table, then reloads
+// the in-memory article cache so PickRandom sees them immediately. A no-op
+// when Gsc.CsvPath is empty (feature off) — never fails startup or the
+// refresh loop, since a missing/malformed export shouldn't stop the fleet.
+func (o *Orchestrator) syncGscData() {
+	if o.cfg.Gsc.CsvPath == "" {
+		return
+	}
+	entries, err := gsc.ImportCSV(o.cfg.Gsc.CsvPath)
+	if err != nil {
+		log.Printf("[orchestrator] gsc import failed (%s): %v — continuing without GSC weighting", o.cfg.Gsc.CsvPath, err)
+		return
+	}
+	updated, err := gsc.SyncGscWithDatabase(o.db, entries)
+	if err != nil {
+		log.Printf("[orchestrator] gsc sync failed: %v", err)
+		return
+	}
+	log.Printf("[orchestrator] gsc: synced opportunity scores for %d/%d pages from %s", updated, len(entries), o.cfg.Gsc.CsvPath)
+	if err := o.articleQ.LoadFromDB(); err != nil {
+		log.Printf("[orchestrator] failed to reload articles after gsc sync: %v", err)
 	}
 }
 

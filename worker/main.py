@@ -51,6 +51,7 @@ except Exception as _e:
 
 from browser.session import create_session
 from browser.humanizer import random_pause, human_scroll, random_mouse_jitter
+from browser import bandwidth
 from search.google import google_search_flow, google_click_target
 from search.bing import bing_search_flow, bing_click_target
 from search.serp import SerpSearchOutcome, SerpResult, detect_captcha
@@ -115,6 +116,7 @@ def execute_task_sync(request) -> object:
     error_msg      = ""
     success        = False
     session        = None
+    bandwidth_used_kb = 0
 
     try:
         # Step 1: create stealth session
@@ -130,6 +132,11 @@ def execute_task_sync(request) -> object:
         )
         sb = session.sb
 
+        # Direct/social traffic lands straight on the target domain (no
+        # Google/Bing detour), so it should get full resources from the
+        # first navigation; every other engine starts on a search engine.
+        bandwidth.set_network_blocking(sb, target=(engine in ("direct", "social")))
+
         # Direct & Social Referral Traffic Flows
         if engine in ("direct", "social"):
             logger.info("Executing %s traffic flow for %s", engine.upper(), article_url)
@@ -142,15 +149,15 @@ def execute_task_sync(request) -> object:
                 ]
                 ref = random.choice(social_referrers)
                 logger.info("Simulating social referrer arrival: %s", ref)
-                sb.open(article_url)
+                bandwidth.navigate(sb, article_url, target=True)
             else:
                 # Direct traffic: 40% visit homepage first, 60% direct article bookmark
                 if random.random() < 0.40:
-                    sb.open(f"https://{domain}")
+                    bandwidth.navigate(sb, f"https://{domain}", target=True)
                     time.sleep(random.uniform(3, 6))
-                    sb.open(article_url)
+                    bandwidth.navigate(sb, article_url, target=True)
                 else:
-                    sb.open(article_url)
+                    bandwidth.navigate(sb, article_url, target=True)
 
             sb.wait_for_ready_state_complete(timeout=15)
             time.sleep(random.uniform(2, 4))
@@ -161,11 +168,12 @@ def execute_task_sync(request) -> object:
                 dwell_time, scroll_depth = simulate_reading(sb, domain)
                 internal_clicks = simulate_internal_clicks(sb, domain)
                 success = True
+                bandwidth.accumulate(sb)  # capture the article before exit navigates away
                 exit_article(sb, domain, distraction_exit_chance)
             else:
                 error_msg = f"Failed to land on {domain}. Current URL: {current_url}"
                 logger.warning(error_msg)
-            return TaskOutcome(
+            return TaskResponse(
                 task_id=task_id,
                 success=success,
                 engine=engine,
@@ -176,7 +184,7 @@ def execute_task_sync(request) -> object:
                 internal_clicks=internal_clicks,
                 captcha_hit=False,
                 error=error_msg,
-                bandwidth_used_kb=0,
+                bandwidth_used_kb=int(round(bandwidth.get_total_kb(sb))),
             )
 
         # Step 2: pre-search #1
@@ -247,7 +255,7 @@ def execute_task_sync(request) -> object:
                     bing_click_target(sb, target_result, competitor_click_chance)
             else:
                 logger.warning("No element ref — opening target URL directly")
-                sb.open(article_url)
+                bandwidth.navigate(sb, article_url, target=True)
 
             # Step 6: verify landing
             time.sleep(random.uniform(1, 3))
@@ -269,6 +277,7 @@ def execute_task_sync(request) -> object:
 
                 # Step 8: exit strategy
                 logger.info("[Step 8] Exit strategy")
+                bandwidth.accumulate(sb)  # capture the article before exit navigates away
                 exit_article(sb, domain, distraction_exit_chance)
             else:
                 error_msg = f"Did not land on target article. URL: {current_url}"
@@ -289,6 +298,11 @@ def execute_task_sync(request) -> object:
             except Exception:
                 pass
     finally:
+        if session and session._sb:
+            try:
+                bandwidth_used_kb = bandwidth.get_total_kb(session._sb)
+            except Exception:
+                pass
         if session:
             session.close()
 
@@ -321,7 +335,7 @@ def execute_task_sync(request) -> object:
         internal_clicks=internal_clicks,
         captcha_hit=captcha_hit,
         error=error_msg,
-        bandwidth_used_kb=0,
+        bandwidth_used_kb=int(round(bandwidth_used_kb)),
     )
 
 
@@ -359,6 +373,7 @@ def _browse_serp_casually(sb, engine: str, target_domain: str,
 
         link = random.choice(non_target)
         from browser.humanizer import human_click_element
+        bandwidth.accumulate(sb)  # capture SERP page before leaving it
         human_click_element(sb, link)
 
         try:
@@ -379,6 +394,7 @@ def _browse_serp_casually(sb, engine: str, target_domain: str,
             random_pause(2, 5)
 
         random_pause(3, 8)
+        bandwidth.accumulate(sb)  # capture the distraction page before leaving it
         sb.go_back()
         try:
             sb.wait_for_ready_state_complete(timeout=15)

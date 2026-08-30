@@ -29,16 +29,25 @@ def detect_recaptcha_version(sb) -> str:
       "none"   — no reCAPTCHA detected
     """
     try:
-        # NOTE: sb.execute_script() under CDP mode (uc=True) only strips a
-        # `return` keyword from the LAST line of the script — any earlier
-        # `return` (e.g. inside an `if` for early-exit) is left as illegal
-        # raw JS, throwing a silently-swallowed SyntaxError. This function
-        # always hit that and returned "none" regardless of the real state.
-        # Wrapping the body in an IIFE (with NO leading `return` on the call
-        # itself) makes every internal return legal; the expression's
-        # completion value is what CDP's evaluate naturally returns.
+        # NOTE: sb.execute_script() has two totally different failure modes
+        # depending on driver state (see shared_utils.is_cdp_swap_needed):
+        #   - CDP mode (driver disconnected): only strips a `return` keyword
+        #     from the LAST line of the script — any earlier `return` (e.g.
+        #     inside an `if` for early-exit) is left as illegal raw JS,
+        #     throwing a silently-swallowed SyntaxError.
+        #   - classic Selenium (driver connected — the common case): runs
+        #     the text as a function body verbatim, so it needs a literal
+        #     top-level `return` or nothing comes back to Python at all
+        #     (confirmed live: a bare IIFE call with no leading `return`
+        #     silently returns None here, not an error — this function
+        #     always hit that and returned "none" regardless of the real
+        #     state).
+        # An IIFE with all its internal early-returns, assigned to a var,
+        # followed by a final `return __result;` line satisfies both: the
+        # CDP path strips "return " from that last line and evaluates the
+        # rest as a bare expression; the classic path keeps it and needs it.
         result = sb.execute_script("""
-            (function() {
+            var __result = (function() {
                 // v2 anchor iframe is the definitive signal for a solvable challenge
                 const v2Anchor = document.querySelector(
                     'iframe[src*="recaptcha"][src*="anchor"]'
@@ -65,6 +74,7 @@ def detect_recaptcha_version(sb) -> str:
 
                 return "none";
             })();
+            return __result;
         """)
         return result or "none"
     except Exception as e:
@@ -122,7 +132,7 @@ def solve_captcha(sb, max_attempts: int = 3) -> bool:
         # JS-based fallback: click the checkbox inside the reCAPTCHA iframe
         try:
             clicked = sb.execute_script("""
-                (function() {
+                var __result = (function() {
                     const iframes = document.querySelectorAll('iframe[src*="recaptcha"][src*="anchor"]');
                     for (const f of iframes) {
                         try {
@@ -132,6 +142,7 @@ def solve_captcha(sb, max_attempts: int = 3) -> bool:
                     }
                     return false;
                 })();
+                return __result;
             """)
             if clicked:
                 time.sleep(2)
@@ -151,7 +162,7 @@ def _is_solved(sb) -> bool:
     """Check if reCAPTCHA checkbox is marked as checked."""
     try:
         result = sb.execute_script("""
-            (function() {
+            var __result = (function() {
                 const frames = document.querySelectorAll('iframe[src*="recaptcha"]');
                 for (const f of frames) {
                     try {
@@ -161,6 +172,7 @@ def _is_solved(sb) -> bool:
                 }
                 return false;
             })();
+            return __result;
         """)
         return bool(result)
     except Exception:

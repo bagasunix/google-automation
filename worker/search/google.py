@@ -26,6 +26,7 @@ from search.serp import (
     click_target_with_variation,
 )
 from captcha.solver import solve_sorry_captcha, detect_recaptcha_version
+from browser import bandwidth
 
 CAPTCHA_MAX_ATTEMPTS = 3
 
@@ -45,7 +46,7 @@ GOOGLE_SEARCH_INPUT_SELECTORS = [
 
 def navigate_to_google(sb) -> None:
     logger.info("Navigating to %s", GOOGLE_URL)
-    sb.open(GOOGLE_URL)
+    bandwidth.navigate(sb, GOOGLE_URL, target=False)
     time.sleep(random.uniform(0.5, 1.5))
 
     # Dismiss consent/cookie banner
@@ -112,12 +113,19 @@ def perform_google_search(sb, query: str) -> bool | str:
         half_idx = max(5, int(len(query) * 0.6))
         type_humanized(sb, matched_selector, query[:half_idx])
         time.sleep(random.uniform(1.2, 2.5))
-        # Complete remaining query with brand association
-        type_humanized(sb, matched_selector, query[half_idx:])
+        # Complete remaining query with brand association — clear_first=False,
+        # otherwise this second call wipes out the first half just typed
+        # (type_humanized() clears the field by default), leaving only the
+        # second half in the box instead of the full query.
+        type_humanized(sb, matched_selector, query[half_idx:], clear_first=False)
         time.sleep(random.uniform(0.8, 1.8))
     else:
         type_humanized(sb, matched_selector, query)
         time.sleep(random.uniform(0.5, 1.5))
+
+    # Capture homepage bytes before the search submit navigates us to the
+    # results page — its performance timeline is about to be discarded.
+    bandwidth.accumulate(sb)
 
     # Try clicking the Google Search button first — more reliable than Enter in UC mode
     submitted = False
@@ -144,7 +152,7 @@ def perform_google_search(sb, query: str) -> bool | str:
             from urllib.parse import quote_plus
             fallback_url = f"https://www.google.com/search?q={quote_plus(query)}"
             logger.warning("Submit did not navigate (URL=%s) — navigating: %s", post_enter_url, fallback_url)
-            sb.open(fallback_url)
+            bandwidth.navigate(sb, fallback_url, target=False)
             time.sleep(2)
     except Exception as e:
         logger.warning("Post-submit URL check failed: %s", e)
