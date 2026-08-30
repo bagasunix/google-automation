@@ -85,11 +85,31 @@ def perform_bing_search(sb, query: str) -> bool:
     bandwidth.accumulate(sb)
     press_enter_humanized(sb, matched_selector)
 
+    # Confirm the submit actually navigated, and recover the way a person
+    # would — a pause, then Enter again — rather than by jumping to a
+    # /search?q= URL, which produces a results page that was never typed into.
+    time.sleep(1.5)
+    try:
+        if "bing.com/search" not in sb.get_current_url():
+            logger.info("Bing submit did not navigate — pressing Enter again (human retry)")
+            time.sleep(random.uniform(0.8, 1.8))
+            try:
+                press_enter_humanized(sb, matched_selector)
+            except Exception as retry_e:
+                logger.debug("Bing Enter retry failed: %s", retry_e)
+            time.sleep(2.5)
+    except Exception as e:
+        logger.warning("Bing post-submit URL check failed: %s", e)
+
     try:
         sb.wait_for_element("ol#b_results, #b_results", timeout=15)
         time.sleep(random.uniform(1.0, 3.0))
     except Exception as e:
-        logger.warning("Bing results page load timeout: %s", e)
+        # Returning True here would hand the caller a homepage to scrape as if
+        # it were a SERP: the target is then "not found" and the task fails
+        # blaming the ranking, hiding the real cause (the search never ran).
+        logger.warning("Bing results never appeared — search did not run: %s", e)
+        return False
 
     return True
 
@@ -105,9 +125,13 @@ def bing_search_flow(sb, query: str, target_domain: str) -> SerpSearchOutcome:
                 return SerpSearchOutcome(captcha_hit=True, error="CAPTCHA on homepage — solve failed")
             navigate_to_bing(sb)
 
-        site_query = f"site:{target_domain} {query}"
-        logger.debug("Bing query with site filter: %s", site_query[:120])
-        success = perform_bing_search(sb, site_query)
+        # Search the query as a visitor would type it. This used to prepend a
+        # "site:<domain>" operator, which nobody types and which guarantees the
+        # target sits at position 1 — that made the SERP position meaningless,
+        # skipped the page-2/page-3 scan entirely, and meant the brand-refine
+        # fallback could never trigger, since the site was always "found".
+        logger.debug("Bing query: %s", query[:120])
+        success = perform_bing_search(sb, query)
         if not success:
             return SerpSearchOutcome(error="Failed to submit Bing search")
 
