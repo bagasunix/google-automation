@@ -52,3 +52,11 @@ Thumbs.db
 # SeleniumBase runtime artifacts — regenerated every run, and
 # proxy_ext_dir/background.js embeds live proxy credentials.
 downloaded_files/
+worker/downloaded_files/
+
+# Compiled Go binaries — rebuilt with `go build`, ~35MB each, and they
+# embed whatever secrets were compiled in.
+bin/
+
+# Stray compiled binary at repo root
+/dashboard
