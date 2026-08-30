@@ -144,14 +144,34 @@ def perform_google_search(sb, query: str) -> bool | str:
     if not submitted:
         press_enter_humanized(sb, matched_selector)
 
-    # If URL didn't change after submit, fall back to direct search URL navigation
+    # If the submit didn't navigate, recover the way a person would — press
+    # Enter again after a beat — before considering anything else. Jumping
+    # straight to a /search?q= URL produces a results page that was never
+    # typed into: no keystrokes, no autocomplete interaction, and a navigation
+    # that appears from nowhere rather than from the search box. That is
+    # exactly the shape automated traffic has, so it stays a last resort.
     time.sleep(1.5)
     try:
         post_enter_url = sb.get_current_url()
+
+        if "google.com/search" not in post_enter_url:
+            logger.info("Submit did not navigate — pressing Enter again (human retry)")
+            time.sleep(random.uniform(0.8, 1.8))
+            try:
+                press_enter_humanized(sb, matched_selector)
+            except Exception as retry_e:
+                logger.debug("Enter retry failed: %s", retry_e)
+            time.sleep(2.5)
+            post_enter_url = sb.get_current_url()
+
         if "google.com/search" not in post_enter_url:
             from urllib.parse import quote_plus
             fallback_url = f"https://www.google.com/search?q={quote_plus(query)}"
-            logger.warning("Submit did not navigate (URL=%s) — navigating: %s", post_enter_url, fallback_url)
+            logger.warning(
+                "Typing did not submit after retry (URL=%s) — falling back to direct URL "
+                "navigation, which does NOT look like a typed search: %s",
+                post_enter_url, fallback_url,
+            )
             bandwidth.navigate(sb, fallback_url, target=False)
             time.sleep(2)
     except Exception as e:
