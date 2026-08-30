@@ -48,3 +48,7 @@ Thumbs.db
 *.env
 .env.*
 !.env.example
+
+# SeleniumBase runtime artifacts — regenerated every run, and
+# proxy_ext_dir/background.js embeds live proxy credentials.
+downloaded_files/

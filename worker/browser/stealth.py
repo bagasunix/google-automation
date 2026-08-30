@@ -341,8 +341,32 @@ class StealthProfile:
         """
         Generate a profile consistent with the proxy's geography and device type.
         """
-        tz = timezone or _COUNTRY_TIMEZONES.get(country.upper(), "") or random.choice(TIMEZONES)
+        # Timezone must follow the proxy's real geography. The old last resort
+        # here was random.choice(TIMEZONES), which is strictly worse than any
+        # fixed value: it makes the browser claim e.g. Asia/Tokyo while the
+        # exit IP is in Germany — an active geographic contradiction, and one
+        # that changes on every run so the same proxy looks like it teleports
+        # between sessions. UTC is merely uninformative; a random zone is
+        # affirmatively wrong. Neither is acceptable silently, so warn.
+        #
+        # The orchestrator always sends a timezone (DetectGeoIP falls back to
+        # "UTC" at worst), so this path is unreachable from the normal flow —
+        # it exists for direct callers like test_one_proxy.py and to keep a
+        # future refactor from quietly reintroducing random geography.
+        tz = timezone or _COUNTRY_TIMEZONES.get(country.upper(), "")
+        if not tz:
+            tz = "UTC"
+            logger.warning(
+                "No timezone for proxy (country=%r) — using UTC. The browser's "
+                "timezone will not match the exit IP's real location.",
+                country,
+            )
         loc = _COUNTRY_LOCALES.get(country.upper(), "en-US")
+        if not country:
+            logger.warning(
+                "No proxy country supplied — locale defaults to %r, which may "
+                "not match the exit IP's location.", loc
+            )
 
         if is_mobile is None:
             # 40% chance of mobile simulation
