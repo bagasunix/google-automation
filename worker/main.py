@@ -237,14 +237,43 @@ def execute_task_sync(request) -> object:
             logger.info("[Step 2-3] Pre-search skipped (enabled=%s)", pre_search_enabled)
 
         # Step 4: target search
-        logger.info("[Step 4] Target search: %s", article_title[:80])
-        target_outcome = _do_search(sb, article_title, domain, engine)
+        # Search the bare topic first — the title minus its "- BagasUnix"
+        # suffix — because that is the query a real visitor would type and the
+        # keyword actually worth ranking for. The brand is held back as a
+        # refinement below rather than spent on the first attempt.
+        brand = _brand_from_domain(domain)
+        search_query = _strip_brand_suffix(article_title, brand)
+        logger.info("[Step 4] Target search: %s", search_query[:80])
+        target_outcome = _do_search(sb, search_query, domain, engine)
 
         if target_outcome.captcha_hit:
             captcha_hit = True
             error_msg = "CAPTCHA during target search: " + target_outcome.error
             capture_screenshot(sb, task_id, "captcha_target")
             raise RuntimeError(error_msg)
+
+        # Nothing across the 3 SERP pages scanned above: narrow the query with
+        # the site name and try once more, the way a person re-searches when
+        # the first phrasing didn't surface what they wanted. Skipped when the
+        # brand is already in the query, which would just duplicate a word.
+        if (not target_outcome.found and brand
+                and brand.lower() not in search_query.lower()):
+            refined_query = f"{search_query} {brand}"
+            logger.info(
+                "[Step 4b] Not found in SERP — refining search with brand: %s",
+                refined_query[:80],
+            )
+            random_pause(2, 5)
+            target_outcome = _do_search(sb, refined_query, domain, engine)
+
+            if target_outcome.captcha_hit:
+                captcha_hit = True
+                error_msg = "CAPTCHA during refined target search: " + target_outcome.error
+                capture_screenshot(sb, task_id, "captcha_target_refined")
+                raise RuntimeError(error_msg)
+
+            if target_outcome.found:
+                logger.info("[Step 4b] Found after brand refinement")
 
         if not target_outcome.found:
             error_msg = f"Target domain '{domain}' not found in SERP"
@@ -358,6 +387,38 @@ def _do_search(sb, query: str, target_domain: str, engine: str) -> SerpSearchOut
     if engine == "google":
         return google_search_flow(sb, query, target_domain)
     return bing_search_flow(sb, query, target_domain)
+
+
+def _brand_from_domain(domain: str) -> str:
+    """'bagasunix.com' -> 'bagasunix'. Empty string if nothing usable."""
+    host = (domain or "").strip().lower()
+    for prefix in ("https://", "http://", "www."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    return host.split(".")[0].split("/")[0]
+
+
+# Separators a CMS puts between a post title and the site name.
+_BRAND_SEPARATORS = (" - ", " – ", " — ", " | ", " :: ")
+
+
+def _strip_brand_suffix(title: str, brand: str) -> str:
+    """
+    Drop a trailing site-name suffix from an article title.
+
+    Every title in this project's DB ends with "- BagasUnix", so searching the
+    raw title is always a *branded* query — which ranks trivially and teaches
+    Google nothing about the keywords the site actually wants to win. Searching
+    the bare topic first mirrors what a real visitor would type, and leaves the
+    brand available as a genuine refinement if the first attempt finds nothing.
+    """
+    if not brand:
+        return title
+    for sep in _BRAND_SEPARATORS:
+        idx = title.rfind(sep)
+        if idx > 0 and title[idx + len(sep):].strip().lower() == brand.lower():
+            return title[:idx].strip()
+    return title
 
 
 def _browse_serp_casually(sb, engine: str, target_domain: str,
