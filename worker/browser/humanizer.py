@@ -218,13 +218,17 @@ def random_mouse_jitter(sb, duration_s: float = 1.0) -> None:
 
 def get_scroll_depth_percent(sb) -> int:
     try:
-        # IIFE with no leading `return` — sb.execute_script() under CDP mode
-        # only strips `return` from the script's LAST line; the earlier
-        # `if (maxScroll <= 0) return 100;` was left as illegal raw JS,
-        # throwing a SyntaxError caught below and always returning 0 —
-        # regardless of how much the page had actually scrolled.
+        # Must satisfy BOTH execute_script dispatch paths: CDP mode strips
+        # `return ` from the LAST line only (so an early `return` inside the
+        # body must stay wrapped in an IIFE), while the classic Selenium path
+        # — the common case — needs an explicit `return` or it hands back
+        # None. A bare IIFE call satisfied only the first: under classic
+        # Selenium this returned None, `int(None)` raised, the except below
+        # swallowed it, and scroll depth was reported as 0% on every task no
+        # matter how far the page had actually been scrolled. Assigning to a
+        # var and returning it on its own final line satisfies both.
         result = sb.execute_script("""
-            (function() {
+            var __result = (function() {
                 const scrollTop = window.scrollY || document.documentElement.scrollTop;
                 const scrollHeight = document.documentElement.scrollHeight;
                 const clientHeight = document.documentElement.clientHeight;
@@ -232,6 +236,7 @@ def get_scroll_depth_percent(sb) -> int:
                 if (maxScroll <= 0) return 100;
                 return Math.min(100, Math.round((scrollTop / maxScroll) * 100));
             })();
+            return __result;
         """)
         return int(result)
     except Exception:

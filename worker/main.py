@@ -123,6 +123,14 @@ def execute_task_sync(request) -> object:
     try:
         # Step 1: create stealth session
         logger.info("[Step 1] Creating SeleniumBase UC session")
+        # The IP health gate rejects datacenter/flagged IPs because a search
+        # engine would serve them a CAPTCHA. Direct/social traffic never
+        # touches a search engine — it navigates straight to our own target
+        # domain, which has no reason to challenge its own visitors — so the
+        # gate has nothing to protect there. Applying it anyway killed every
+        # direct/social task before the browser even opened (14 of the first
+        # 30 tasks on record), for a risk that structurally cannot apply.
+        skip_ip_gate = engine in ("direct", "social")
         session = create_session(
             proxy_ip=proxy_ip,
             proxy_port=proxy_port,
@@ -131,6 +139,7 @@ def execute_task_sync(request) -> object:
             proxy_country=proxy_country,
             proxy_timezone=proxy_timezone,
             headless=not _ARGS.headed if _ARGS else True,
+            skip_health_check=skip_ip_gate,
         )
         sb = session.sb
 
