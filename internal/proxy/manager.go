@@ -123,6 +123,17 @@ func (m *Manager) refresh() error {
 	// the one proxy — the same mechanism already used for CAPTCHA hits —
 	// keeps the rest of that key's proxies in rotation.
 	const bandwidthQuarantine = 1 * time.Hour
+
+	// A proxy permanently blacklisted in the DB (repeated CAPTCHA hits) must
+	// stay out of rotation even across an orchestrator restart, when the
+	// pool's in-memory blacklist map starts empty. Fetch the current set
+	// once so we can skip re-adding those IDs to the fresh pool below.
+	banned, err := m.db.BlacklistedProxyIDs()
+	if err != nil {
+		log.Printf("[proxy-manager] failed to load blacklisted proxy IDs: %v", err)
+		banned = map[int64]bool{}
+	}
+
 	var pooled []PooledProxy
 	for _, r := range results {
 		sp := &storage.Proxy{
@@ -140,6 +151,10 @@ func (m *Manager) refresh() error {
 		id, err := m.db.UpsertProxy(sp)
 		if err != nil {
 			log.Printf("[proxy-manager] failed to upsert proxy %s:%d: %v", r.Proxy.IP, r.Proxy.Port, err)
+			continue
+		}
+		if banned[id] {
+			log.Printf("[proxy-manager] skipping %s:%d — permanently blacklisted in DB", r.Proxy.IP, r.Proxy.Port)
 			continue
 		}
 		px := PooledProxy{

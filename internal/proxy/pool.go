@@ -150,7 +150,9 @@ func (p *Pool) RecordSuccess(px PooledProxy) {
 }
 
 // RecordFailure records a failure for the proxy and applies auto-quarantine or blacklist.
-func (p *Pool) RecordFailure(px PooledProxy, isCaptcha bool, reason string) {
+// Returns (blacklisted, reason) so the caller can persist a permanent ban to the
+// DB — the in-memory blacklist map alone doesn't survive an orchestrator restart.
+func (p *Pool) RecordFailure(px PooledProxy, isCaptcha bool, reason string) (bool, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -160,14 +162,15 @@ func (p *Pool) RecordFailure(px PooledProxy, isCaptcha bool, reason string) {
 	if isCaptcha {
 		if errCount >= 2 {
 			// 2nd CAPTCHA in a row — blacklist permanently
-			p.blacklisted[px.ID] = "Repeated CAPTCHA: " + reason
+			banReason := "Repeated CAPTCHA: " + reason
+			p.blacklisted[px.ID] = banReason
 			fmt.Printf("[proxy-pool] blacklisted %s:%d (consecutive CAPTCHAs: %d)\n", px.IP, px.Port, errCount)
-		} else {
-			// 1st CAPTCHA — quarantine for 4 hours
-			p.quarantined[px.ID] = time.Now().Add(4 * time.Hour)
-			fmt.Printf("[proxy-pool] auto-quarantined %s:%d for 4h after CAPTCHA\n", px.IP, px.Port)
+			return true, banReason
 		}
-		return
+		// 1st CAPTCHA — quarantine for 4 hours
+		p.quarantined[px.ID] = time.Now().Add(4 * time.Hour)
+		fmt.Printf("[proxy-pool] auto-quarantined %s:%d for 4h after CAPTCHA\n", px.IP, px.Port)
+		return false, ""
 	}
 
 	// Non-captcha errors (timeouts, network drops)
@@ -175,6 +178,7 @@ func (p *Pool) RecordFailure(px PooledProxy, isCaptcha bool, reason string) {
 		p.quarantined[px.ID] = time.Now().Add(2 * time.Hour)
 		fmt.Printf("[proxy-pool] auto-quarantined %s:%d for 2h after %d network failures\n", px.IP, px.Port, errCount)
 	}
+	return false, ""
 }
 
 // Release returns a proxy back to the available pool (e.g. task failed with

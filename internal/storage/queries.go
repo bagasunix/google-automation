@@ -60,6 +60,28 @@ func (db *DB) BlacklistProxy(proxyID int64, reason string) error {
 	return err
 }
 
+// BlacklistedProxyIDs returns the set of proxy IDs currently permanently
+// blacklisted. Used at refresh time so a DB-persisted ban (e.g. repeated
+// CAPTCHA hits) keeps a proxy out of rotation even across a process restart,
+// when the pool's in-memory blacklist map starts empty.
+func (db *DB) BlacklistedProxyIDs() (map[int64]bool, error) {
+	rows, err := db.conn.Query(`SELECT id FROM proxies WHERE blacklisted = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
 // DeactivateProxy marks a proxy inactive without blacklisting (e.g. failed health check).
 func (db *DB) DeactivateProxy(proxyID int64) error {
 	_, err := db.conn.Exec(

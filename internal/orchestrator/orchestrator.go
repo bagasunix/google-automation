@@ -407,10 +407,18 @@ func (o *Orchestrator) runOneSlotCycle(ctx context.Context, slotID int, fm *Flee
 		})
 		fm.Log(slotID, px.Country, "WARN", "CAPTCHA hit on "+engine)
 		o.scheduler.TriggerEnginePause(engine)
-		o.pool.RecordFailure(px, true, resp.Error)
+		if banned, reason := o.pool.RecordFailure(px, true, resp.Error); banned {
+			if err := o.db.BlacklistProxy(px.ID, reason); err != nil {
+				fm.Log(slotID, px.Country, "ERROR", "failed to persist proxy blacklist: "+err.Error())
+			}
+		}
 	} else if err != nil {
 		fm.Log(slotID, px.Country, "ERROR", err.Error())
-		o.pool.RecordFailure(px, false, err.Error())
+		if banned, reason := o.pool.RecordFailure(px, false, err.Error()); banned {
+			if err := o.db.BlacklistProxy(px.ID, reason); err != nil {
+				fm.Log(slotID, px.Country, "ERROR", "failed to persist proxy blacklist: "+err.Error())
+			}
+		}
 	} else if resp != nil && resp.Success {
 		fm.Log(slotID, px.Country, "SUCCESS", fmt.Sprintf("Completed dwell=%ds serp=%d", resp.DwellTimeSeconds, resp.SerpPosition))
 		o.pool.RecordSuccess(px)
