@@ -10,10 +10,17 @@ domains:
   - bagasunix.com
 
 engine_ratio:
-  google: 70
-  bing: 10
-  direct: 10
-  social: 10
+  # Hanya google yang menghasilkan data GSC (bing punya Webmaster Tools
+  # sendiri; direct/social tidak melibatkan pencarian sama sekali).
+  # Digeser dari direct/social ke google: 70 -> 80.
+  # Tidak dinaikkan lebih jauh karena bagasunix.com itu Blogger — Google
+  # melihat komposisi trafiknya, dan blog yang 100% trafiknya dari Google
+  # Search justru tidak wajar. 80/10/5/5 masih dalam rentang normal blog.
+  # Bobot ini relatif, tidak harus berjumlah 100.
+  google: 80
+  bing: 10     # diminta user secara eksplisit ("bukan hanya di google aja")
+  direct: 5
+  social: 5
 
 scheduler:
   concurrency: 4                   # concurrent worker slots — Go orchestrator AND
@@ -35,7 +42,9 @@ scheduler:
   pre_search_enabled: true         # false = skip pre-search entirely (hemat ~1 MB/task)
   pre_search_2_chance: 0.25        # 25% chance second pre-search (cukup variasi, gak boros)
   serp_casual_click_chance: 0.15   # 15% klik random result di SERP (kadang browsing)
-  competitor_click_chance: 0.10    # 10% klik competitor dulu (kadang compare)
+  competitor_click_chance: 0.70    # 70% = JALUR STANDAR (spec user): kunjungi situs lain
+                                   # beberapa detik -> balik ke SERP -> baru klik punya kita.
+                                   # Tidak 100% supaya tetap ada variasi klik langsung.
   distraction_exit_chance: 0.05    # 5% exit ke distraction site (kadang terdistraksi)
   serp_dwell_seconds_min: 2        # min time reading SERP snippets before clicking
   serp_dwell_seconds_max: 5        # max time reading SERP snippets

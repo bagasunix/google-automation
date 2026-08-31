@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -91,10 +92,52 @@ var (
 	activeSessions = make(map[string]time.Time)
 )
 
-func getAuthConfig() (enabled bool, user, pass string) {
+// errNoCredentials is returned when auth is on but nothing configured it.
+// Callers must treat this as "deny", never as "use a default".
+var errNoCredentials = fmt.Errorf(
+	"dashboard auth is enabled but DASHBOARD_USERNAME/DASHBOARD_PASSWORD are not set " +
+		"(checked environment and %s) — refusing to serve with built-in credentials",
+	"the resolved .env file")
+
+// resolveEnvPath locates the .env file without depending on the working
+// directory. Under systemd without an explicit WorkingDirectory= the CWD is /,
+// so a bare ".env" silently resolves to nothing; that used to mean the
+// dashboard fell back to its built-in credentials while looking healthy.
+// DASHBOARD_ENV_FILE overrides everything for deployments that keep it
+// elsewhere.
+func resolveEnvPath() string {
+	if p := os.Getenv("DASHBOARD_ENV_FILE"); p != "" {
+		return p
+	}
+	if _, err := os.Stat(".env"); err == nil {
+		return ".env"
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		// The binary normally sits in bin/ under the project root, so check
+		// beside it and one level up.
+		for _, cand := range []string{
+			filepath.Join(dir, ".env"),
+			filepath.Join(filepath.Dir(dir), ".env"),
+		} {
+			if _, err := os.Stat(cand); err == nil {
+				return cand
+			}
+		}
+	}
+	return ".env"
+}
+
+// getAuthConfig resolves the dashboard credentials.
+//
+// It deliberately has NO built-in fallback. It previously defaulted to
+// admin/<a password that is present in this repository's public git history>,
+// so any deployment where .env was missing — see resolveEnvPath — accepted a
+// login that anyone reading the repo already knew. When auth is enabled and
+// no credentials are configured this now returns errNoCredentials and every
+// caller denies access.
+func getAuthConfig() (enabled bool, user, pass string, err error) {
 	enabled = true
-	user = "admin"
-	pass = "bagasunix2026"
 
 	// config.yaml may still set `enabled` (not a secret, fine to version
 	// control) but username/password are no longer read from it — .env is
@@ -110,25 +153,23 @@ func getAuthConfig() (enabled bool, user, pass string) {
 		}
 	}
 
-	envMap := loadEnvFile(".env")
-	if v := os.Getenv("DASHBOARD_USERNAME"); v != "" {
-		user = v
-	} else if v := envMap["DASHBOARD_USERNAME"]; v != "" {
-		user = v
-	}
-	if v := os.Getenv("DASHBOARD_PASSWORD"); v != "" {
-		pass = v
-	} else if v := envMap["DASHBOARD_PASSWORD"]; v != "" {
-		pass = v
-	}
+	envMap := loadEnvFile(resolveEnvPath())
+	user = firstNonEmpty(os.Getenv("DASHBOARD_USERNAME"), envMap["DASHBOARD_USERNAME"])
+	pass = firstNonEmpty(os.Getenv("DASHBOARD_PASSWORD"), envMap["DASHBOARD_PASSWORD"])
 
-	if envUser := os.Getenv("DASHBOARD_USERNAME"); envUser != "" {
-		user = envUser
+	if enabled && (user == "" || pass == "") {
+		return enabled, "", "", errNoCredentials
 	}
-	if envPass := os.Getenv("DASHBOARD_PASSWORD"); envPass != "" {
-		pass = envPass
+	return enabled, user, pass, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return enabled, user, pass
+	return ""
 }
 
 func createSession() string {
@@ -280,7 +321,16 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		enabled, _, _ := getAuthConfig()
+		enabled, _, _, authErr := getAuthConfig()
+		if authErr != nil {
+			// Misconfigured, not unauthenticated: deny everything rather
+			// than fall through to a default login.
+			log.Printf("SECURITY: %v", authErr)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"error":"Dashboard auth is not configured"}`)
+			return
+		}
 		if !enabled {
 			next(w, r)
 			return
@@ -512,6 +562,11 @@ func main() {
 	baseDir, _ := os.Getwd()
 
 	if *serveAddr != "" {
+		// Fail fast and loudly instead of coming up on an internet-facing
+		// port with no working credentials.
+		if _, _, _, err := getAuthConfig(); err != nil {
+			log.Fatalf("refusing to start: %v", err)
+		}
 		log.Printf("🚀 Starting Google Automation Control Panel on http://localhost%s", *serveAddr)
 
 		// Public: Static assets & Favicon
@@ -540,7 +595,16 @@ self.addEventListener('fetch', event => {
 
 		// Public: Login Page with Brute-Force Rate Limiting
 		http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-			enabled, validUser, validPass := getAuthConfig()
+			enabled, validUser, validPass, authErr := getAuthConfig()
+			if authErr != nil {
+				log.Printf("SECURITY: %v", authErr)
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = loginTmpl.Execute(w, map[string]interface{}{
+					"Error": "Dashboard credentials are not configured on the server.",
+				})
+				return
+			}
 			if !enabled {
 				http.Redirect(w, r, "/", http.StatusFound)
 				return
@@ -570,7 +634,11 @@ self.addEventListener('fetch', event => {
 				user := r.FormValue("username")
 				pass := r.FormValue("password")
 
-				if user == validUser && pass == validPass {
+				// Constant-time so a wrong password cannot be narrowed down
+				// by timing the response.
+				userOK := subtle.ConstantTimeCompare([]byte(user), []byte(validUser)) == 1
+				passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(validPass)) == 1
+				if userOK && passOK {
 					globalLimiter.ClearLoginFailures(ip)
 					token := createSession()
 					http.SetCookie(w, &http.Cookie{

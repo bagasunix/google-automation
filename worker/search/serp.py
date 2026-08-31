@@ -285,21 +285,30 @@ def find_target_in_serp(sb, target_domain: str, engine: str = "google", max_page
 # Click variation strategies & Pogo-Sticking Engine
 # ---------------------------------------------------------------------------
 
+# Clickable result anchors per engine — same selectors the SERP parsers use.
+_SERP_LINK_SEL = {
+    "google": "div.g h3 a, div.tF2Cxc h3 a",
+    "bing": "li.b_algo h2 a",
+}
+
 def click_target_with_variation(sb, target_result: SerpResult, engine: str = "google",
                                  competitor_click_chance: float = 0.20) -> None:
     """
     Simulate natural human click variation on search engine result pages.
-    Strategies:
-      - Direct click (50%)
-      - Scroll past target then back up (25%)
-      - Pogo-sticking on competitor (25%): clicks competitor, bounces back to SERP, then clicks target.
-    """
-    r = random.random()
 
-    if competitor_click_chance > 0 and r < competitor_click_chance:
+    Pogo-sticking fires at `competitor_click_chance`; whatever probability is
+    left over is split between a direct click and a scroll-past-then-back
+    click in a 5:3 ratio (the original 50/30 weighting).
+
+    The two draws are deliberately independent. They used to share one `r`,
+    which silently distorted the split as `competitor_click_chance` rose — at
+    0.70 or above the direct-click branch became unreachable entirely, since
+    it needed `competitor_click_chance <= r < 0.70`.
+    """
+    if competitor_click_chance > 0 and random.random() < competitor_click_chance:
         logger.info("Triggering Pogo-Sticking SEO boost strategy (competitor bounce -> target dwell)")
         _pogo_sticking_flow(sb, target_result, engine)
-    elif r < 0.70:
+    elif random.random() < 0.625:  # 50 / (50 + 30)
         _click_direct(sb, target_result)
     else:
         _click_scroll_past(sb, target_result)
@@ -314,11 +323,19 @@ def _click_direct(sb, result: SerpResult) -> None:
     bandwidth.accumulate(sb)
     bandwidth.set_network_blocking(sb, target=True)
     if result.element_ref:
+        # human_click_element swallows failures and reports them by returning
+        # False rather than raising, so the result has to be checked: this
+        # used to `return` unconditionally, which meant a failed click fell
+        # through to nothing at all — no click, no fallback, task left sitting
+        # on the SERP having never reached the target.
+        clicked = False
         try:
-            human_click_element(sb, result.element_ref)
+            clicked = human_click_element(sb, result.element_ref)
+        except Exception as e:
+            logger.debug("Element click raised: %s", e)
+        if clicked:
             return
-        except Exception:
-            pass
+        logger.info("Element click failed — falling back to direct URL open")
     try:
         bandwidth.navigate(sb, result.url, target=True)
     except Exception as e:
@@ -334,6 +351,55 @@ def _click_scroll_past(sb, result: SerpResult) -> None:
     _click_direct(sb, result)
 
 
+
+def _relocate_result(sb, result: SerpResult, engine: str) -> bool:
+    """Re-find `result`'s clickable anchor on the SERP we just bounced back to.
+
+    A WebElement captured before navigating away is dead once we return —
+    verified live: reusing it raises instead of clicking. `_click_direct`
+    swallows that and falls back to opening the URL directly, which does not
+    look like a click on a search result. Re-locating keeps the pogo-stick
+    flow an actual click, which is the whole point of running it.
+    """
+    sel = _SERP_LINK_SEL.get(engine, _SERP_LINK_SEL["google"])
+    try:
+        links = sb.find_elements(sel)
+    except Exception as e:
+        logger.warning("Could not re-locate target after bounce: %s", e)
+        result.element_ref = None
+        return False
+
+    for el in links:
+        try:
+            href = el.get_attribute("href") or ""
+        except Exception:
+            continue
+        if href == result.url:
+            result.element_ref = el
+            logger.info("Re-located target element on returned SERP (exact URL)")
+            return True
+
+    # Google can rewrite hrefs on a restored page; our domain is unique on
+    # the SERP, so matching it is a safe second pass.
+    if result.domain:
+        for el in links:
+            try:
+                href = el.get_attribute("href") or ""
+            except Exception:
+                continue
+            if result.domain in href:
+                result.element_ref = el
+                logger.info("Re-located target element on returned SERP (domain match)")
+                return True
+
+    logger.warning(
+        "Target anchor not found after bounce — click will fall back to a "
+        "direct URL open, which does not look like a real SERP click"
+    )
+    result.element_ref = None
+    return False
+
+
 def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
     """
     Simulate Pogo-Sticking (Bounce on competitor -> Satisfied dwell on target):
@@ -347,7 +413,7 @@ def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
     competitor_clicked = False
 
     try:
-        sel = "div.g h3 a, div.tF2Cxc h3 a" if engine == "google" else "li.b_algo h2 a"
+        sel = _SERP_LINK_SEL.get(engine, _SERP_LINK_SEL["google"])
         links = sb.find_elements(sel)
 
         for link in links:
@@ -377,7 +443,9 @@ def _pogo_sticking_flow(sb, result: SerpResult, engine: str) -> None:
     except Exception as e:
         logger.warning("Pogo-sticking flow error: %s", e)
 
-    # Now click our target domain
+    # Now click our target domain. The ref captured before we left the SERP
+    # is dead after go_back(), so re-find it first.
     if competitor_clicked:
         logger.info("Pogo-sticking: now proceeding to click target domain with full satisfaction dwell")
+        _relocate_result(sb, result, engine)
     _click_direct(sb, result)
