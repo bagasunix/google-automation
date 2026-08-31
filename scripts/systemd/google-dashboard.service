@@ -6,7 +6,16 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/Project/google-automation
-ExecStart=/root/Project/google-automation/bin/dashboard --serve :8080
+# Match the orchestrator unit: the leading '-' keeps startup working when the
+# file is absent, while the dashboard itself now refuses to serve without
+# DASHBOARD_USERNAME/DASHBOARD_PASSWORD rather than falling back to defaults.
+EnvironmentFile=-/root/Project/google-automation/.env
+# Bound to loopback on purpose. This dashboard's old fallback password is in
+# this repository's public git history, so it should be reached over an SSH
+# tunnel (ssh -L 8080:127.0.0.1:8080 user@vps) or from behind a TLS reverse
+# proxy — not published straight onto the internet. Change to :8080 only
+# after the credentials have been rotated and a proxy terminates TLS.
+ExecStart=/root/Project/google-automation/bin/dashboard --serve 127.0.0.1:8080
 Restart=always
 RestartSec=5
 

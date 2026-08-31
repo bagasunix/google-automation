@@ -567,7 +567,13 @@ func main() {
 		if _, _, _, err := getAuthConfig(); err != nil {
 			log.Fatalf("refusing to start: %v", err)
 		}
-		log.Printf("🚀 Starting Google Automation Control Panel on http://localhost%s", *serveAddr)
+		// serveAddr may be ":8080" or "127.0.0.1:8080"; only the bare-port
+		// form needs a host prefixed for the URL to be clickable.
+		displayAddr := *serveAddr
+		if strings.HasPrefix(displayAddr, ":") {
+			displayAddr = "localhost" + displayAddr
+		}
+		log.Printf("🚀 Starting Google Automation Control Panel on http://%s", displayAddr)
 
 		// Public: Static assets & Favicon
 		http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))

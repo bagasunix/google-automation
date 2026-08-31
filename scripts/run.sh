@@ -19,8 +19,11 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/pip" install --upgrade pip
     "$VENV_DIR/bin/pip" install -r "$WORKER_DIR/requirements.txt"
-    echo "      Installing playwright chromium..."
-    "$VENV_DIR/bin/playwright" install chromium
+    # SeleniumBase drives real Chrome via undetected-chromedriver; the old
+    # `playwright install chromium` here downloaded ~150MB of a browser this
+    # project never launches.
+    echo "      Installing chromedriver for SeleniumBase..."
+    "$PYTHON" -m seleniumbase install chromedriver
     echo "      Done."
 else
     echo "[1/5] Python venv exists, skipping."
@@ -58,10 +61,14 @@ else
     exit 1
 fi
 
-# Auto-detect Go path
+# Auto-detect Go path. /usr/local/go is where vps_setup.sh installs it.
+GO_CMD=""
 if command -v go &>/dev/null; then
     GO_CMD="go"
-elif [ -f "$HOME/go-sdk/go/bin/go" ]; then
+elif [ -x /usr/local/go/bin/go ]; then
+    export PATH="/usr/local/go/bin:$PATH"
+    GO_CMD="go"
+elif [ -x "$HOME/go-sdk/go/bin/go" ]; then
     export PATH="$HOME/go-sdk/go/bin:$PATH"
     GO_CMD="go"
 fi
@@ -69,10 +76,21 @@ fi
 # --- 5. Start Go orchestrator ---
 echo "[5/5] Starting Go orchestrator..."
 cd "$PROJECT_DIR"
-if [ -f "$PROJECT_DIR/bin/orchestrator" ]; then
+# bin/orchestrator is still tracked in git, so a fresh clone carries a
+# prebuilt binary that predates whatever was just pulled. Rebuild whenever a
+# toolchain is available rather than trusting that file.
+if [ -n "$GO_CMD" ]; then
+    echo "      Rebuilding orchestrator from source..."
+    $GO_CMD build -o "$PROJECT_DIR/bin/orchestrator" cmd/main.go
+    "$PROJECT_DIR/bin/orchestrator" &
+elif [ -f "$PROJECT_DIR/bin/orchestrator" ]; then
+    echo "      WARNING: Go not found — running the committed bin/orchestrator,"
+    echo "               which may be older than this checkout."
     "$PROJECT_DIR/bin/orchestrator" &
 else
-    $GO_CMD run cmd/main.go &
+    echo "      ERROR: Go not found and no bin/orchestrator to fall back on." >&2
+    kill $WORKER_PID 2>/dev/null
+    exit 1
 fi
 GO_PID=$!
 echo "      Go PID: $GO_PID"

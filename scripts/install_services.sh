@@ -5,7 +5,14 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CURRENT_USER="$(whoami)"
+# This script is meant to be run with sudo, where `whoami` is root — so prefer
+# the account that invoked sudo. These services drive a browser and serve a web
+# dashboard; neither needs root.
+CURRENT_USER="${SUDO_USER:-$(whoami)}"
+if [ "$CURRENT_USER" = "root" ]; then
+    echo "NOTE: installing services to run as root. Prefer running this as a"
+    echo "      normal user with sudo so the services drop root privileges."
+fi
 
 echo "=== Installing Google Automation systemd Services ==="
 echo "Project Path: $PROJECT_DIR"

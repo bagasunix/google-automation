@@ -34,12 +34,50 @@ pip install -r requirements.txt
 python -m seleniumbase install chromedriver
 cd ..
 
-# 4. Build Go Binaries
+# 4. Install Go toolchain
+# go.mod requires 1.25.x, which is newer than the golang package on most
+# Debian/Ubuntu releases — so install the official tarball rather than apt.
+GO_VERSION="1.25.14"
+if ! command -v go &>/dev/null && [ ! -x /usr/local/go/bin/go ]; then
+    echo "Installing Go ${GO_VERSION}..."
+    case "$(uname -m)" in
+        x86_64)  GO_ARCH=amd64 ;;
+        aarch64) GO_ARCH=arm64 ;;
+        *) echo "ERROR: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+    esac
+    wget -q -O /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm -f /tmp/go.tar.gz
+    # Persist for future logins as well as this script.
+    echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh > /dev/null
+fi
+export PATH="$PATH:/usr/local/go/bin"
+
+if ! command -v go &>/dev/null; then
+    echo "ERROR: Go is still not on PATH after installation." >&2
+    exit 1
+fi
+echo "Go: $(go version)"
+
+# 5. Build Go Binaries
+#
+# This build is MANDATORY, not best-effort. bin/dashboard and bin/orchestrator
+# are still tracked in git, so a fresh clone ships prebuilt binaries — and the
+# systemd units run those files by path. When this step was wrapped in
+# `if command -v go`, a VPS without Go skipped the build silently and systemd
+# then ran the stale committed binary instead of the code just cloned.
 echo "Building Go orchestrator & dashboard..."
-if command -v go &>/dev/null; then
-    go build -o bin/orchestrator cmd/main.go
-    go build -o bin/dashboard cmd/dashboard/main.go
-    echo "Go binaries built in ./bin"
+go build -o bin/orchestrator cmd/main.go
+go build -o bin/dashboard cmd/dashboard/main.go
+echo "Go binaries built in ./bin"
+
+# 6. Credentials
+if [ ! -f .env ]; then
+    echo ""
+    echo "WARNING: .env not found. It is intentionally not in git, so create it"
+    echo "         from .env.example before starting the services — the dashboard"
+    echo "         now refuses to start without DASHBOARD_USERNAME/PASSWORD."
 fi
 
 echo "=== Setup Completed! ==="
