@@ -11,11 +11,25 @@ Returns a HealthResult so callers can skip flagged proxies early.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 logger = logging.getLogger("worker.browser.ip_health")
+
+# The Tor Project publishes every exit node's address. Matching against that
+# list is the only reliable test: an exit node's org name usually says nothing
+# about Tor (a real exit we checked was org="R0CKET-CLOUD"), while plenty of
+# ordinary ISPs contain "tor" as a substring (Torino, Vector, Storage...).
+_TOR_EXIT_LIST_URL = "https://check.torproject.org/torbulkexitlist"
+_TOR_LIST_TTL = 24 * 3600
+_tor_exits: Optional[set] = None
+_tor_exits_loaded_at: float = 0.0
+
+# Only a self-declared Tor org should match by name, and on word boundaries.
+_TOR_ORG_RE = re.compile(r"\btor\b(?:[\s-]*(?:exit|relay|node|network|project))?", re.I)
 
 # Self-lookup form — no explicit IP in the path. We always route this
 # request through the proxy being checked (see `proxies` below), so ipapi.co
@@ -148,6 +162,65 @@ def _fetch_ipapi_fallback(proxies: Optional[dict], timeout: int) -> Optional[dic
     return None
 
 
+
+def _load_tor_exits() -> set:
+    """Fetch (and cache for _TOR_LIST_TTL) the published Tor exit-node list."""
+    global _tor_exits, _tor_exits_loaded_at
+
+    if _tor_exits is not None and (time.time() - _tor_exits_loaded_at) < _TOR_LIST_TTL:
+        return _tor_exits
+
+    import urllib.request
+
+    cache = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "tor_exits.txt",
+    )
+
+    text = ""
+    try:
+        req = urllib.request.Request(
+            _TOR_EXIT_LIST_URL, headers={"User-Agent": "curl/7.88.1"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            with open(cache, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as e:
+            logger.debug("could not cache Tor exit list: %s", e)
+    except Exception as e:
+        # Network hiccup: fall back to the last good copy on disk rather than
+        # silently treating every IP as non-Tor.
+        logger.warning("Tor exit list fetch failed (%s) — using cached copy", e)
+        try:
+            with open(cache, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            logger.warning("no cached Tor exit list either — org-name check only")
+
+    _tor_exits = {
+        line.strip() for line in text.splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    _tor_exits_loaded_at = time.time()
+    logger.info("Tor exit list: %d addresses", len(_tor_exits))
+    return _tor_exits
+
+
+def _is_tor_exit(ip: str, org: str) -> bool:
+    """True when this IP is a Tor exit node.
+
+    Authoritative check is the published exit list; the org-name regex only
+    catches self-declared exits ("TOR Exit and More") whose address the list
+    fetch may have missed.
+    """
+    if ip and ip in _load_tor_exits():
+        return True
+    return bool(org and _TOR_ORG_RE.search(org))
+
+
 def _evaluate(data: dict) -> HealthResult:
     ip = data.get("ip", "")
     org = (data.get("org", "") or "").lower()
@@ -159,7 +232,7 @@ def _evaluate(data: dict) -> HealthResult:
         or any(kw in org for kw in _DATACENTER_ORGS)
     )
     is_proxy = bool(data.get("_proxy", False))
-    is_tor = "tor" in org
+    is_tor = _is_tor_exit(ip, org)
 
     result = HealthResult(
         ip=ip,
