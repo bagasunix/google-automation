@@ -57,6 +57,11 @@ func (m *Manager) Pool() *Pool {
 	return m.pool
 }
 
+// hasWebshare reports whether any Webshare API key is configured (multi or legacy).
+func (m *Manager) hasWebshare() bool {
+	return len(m.cfg.WebshareAPIKeys) > 0 || m.cfg.WebshareAPIKey != ""
+}
+
 // InitialRefresh scrapes, health-checks, and loads proxies synchronously.
 // Call this at startup so the scheduler has proxies immediately.
 func (m *Manager) InitialRefresh() error {
@@ -83,23 +88,42 @@ func (m *Manager) refresh() error {
 	var proxies []Proxy
 	var err error
 
-	if m.cfg.Provider == "residential" && m.cfg.ResidentialHost != "" {
-		log.Printf("[proxy-manager] generating residential rotating proxies (%s:%d, country=%s)...",
-			m.cfg.ResidentialHost, m.cfg.ResidentialPort, m.cfg.ResidentialCountry)
-		proxies = GenerateResidentialProxies(m.cfg, 20)
-	} else if m.cfg.Provider == "custom_file" && m.cfg.CustomProxyFile != "" {
+	// Residential and datacenter proxies coexist in ONE pool. The scheduler
+	// (PickEngineForProxy) then routes each task by proxy type: datacenter →
+	// direct/social only, residential → full ratio incl. google/bing. So we
+	// don't pick "residential OR webshare" here anymore — we load whichever
+	// are configured, together. A custom file still replaces the scraped set.
+	if m.cfg.CustomProxyFile != "" {
 		log.Printf("[proxy-manager] loading custom proxies from %s...", m.cfg.CustomProxyFile)
 		proxies, err = LoadCustomProxyFile(m.cfg.CustomProxyFile)
 		if err != nil {
 			log.Printf("[proxy-manager] custom file error (%v) — falling back to scraper", err)
-			proxies, err = m.scraper.Scrape()
+			proxies = nil
 		}
-	} else {
-		log.Println("[proxy-manager] scraping proxies via Webshare / configured sources…")
-		proxies, err = m.scraper.Scrape()
 	}
 
-	if err != nil {
+	if len(proxies) == 0 {
+		// Datacenter proxies from Webshare / configured sources.
+		if m.hasWebshare() || len(m.cfg.Sources) > 0 {
+			log.Println("[proxy-manager] scraping datacenter proxies via Webshare / configured sources…")
+			scraped, scrapeErr := m.scraper.Scrape()
+			if scrapeErr != nil {
+				log.Printf("[proxy-manager] scrape failed: %v", scrapeErr)
+				err = scrapeErr
+			} else {
+				proxies = append(proxies, scraped...)
+			}
+		}
+
+		// Residential gateway proxies — added ALONGSIDE datacenter, not instead.
+		if m.cfg.ResidentialHost != "" && m.cfg.ResidentialUser != "" {
+			log.Printf("[proxy-manager] adding residential rotating proxies (%s:%d, country=%s)...",
+				m.cfg.ResidentialHost, m.cfg.ResidentialPort, m.cfg.ResidentialCountry)
+			proxies = append(proxies, GenerateResidentialProxies(m.cfg, 20)...)
+		}
+	}
+
+	if err != nil && len(proxies) == 0 {
 		return fmt.Errorf("scrape: %w", err)
 	}
 	if len(proxies) == 0 {
@@ -168,6 +192,8 @@ func (m *Manager) refresh() error {
 			Username:    r.Proxy.Username,
 			Password:    r.Proxy.Password,
 			APIKeyIndex: r.Proxy.APIKeyIndex,
+			IsDatacenter: r.IsDatacenter,
+			IsResidential: r.Proxy.IsResidential,
 		}
 		if r.BandwidthExhausted {
 			m.pool.Quarantine(px, bandwidthQuarantine, "bandwidth exhausted (402)")

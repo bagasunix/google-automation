@@ -76,10 +76,22 @@ class SBSession:
         except Exception:
             pass
 
+        # Identity key: what makes this session "one consistent person" for
+        # both its fingerprint and its warm cookie profile. A gateway
+        # residential proxy shares ONE IP across many rotating exits, each
+        # distinguished only by a per-session username (…-session-sessNNNN), so
+        # keying off proxy_ip would collapse every exit into one identity.
+        # Detect that shape and key off the username instead; datacenter
+        # proxies (no session token) keep keying off proxy_ip.
+        is_gateway_residential = "session-" in (self.proxy_username or "")
+        identity_key = self.proxy_username if is_gateway_residential else ""
+
         if self.profile is None:
             self.profile = StealthProfile.for_proxy(
                 country=self.proxy_country,
                 timezone=self.proxy_timezone,
+                proxy_ip=self.proxy_ip,
+                seed_key=identity_key,
             )
 
         if self.profile.timezone:
@@ -118,7 +130,7 @@ class SBSession:
         if self.use_warm_profile:
             from browser.profiles import get_profile_dir, cleanup_profile
             if not self.user_data_dir:
-                self.user_data_dir = get_profile_dir(proxy_ip=self.proxy_ip)
+                self.user_data_dir = get_profile_dir(proxy_ip=self.proxy_ip, identity_key=identity_key)
             cleanup_profile(self.user_data_dir)
             kwargs["user_data_dir"] = self.user_data_dir
             logger.info("Using warm profile: %s", self.user_data_dir)

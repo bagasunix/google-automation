@@ -60,20 +60,29 @@ proxy:
   # truth drift that's easy to lose track of when rotating a key.
   webshare_api_key: ""
   webshare_api_keys: []
-  sources: []
-  # sources (disabled — hanya pakai Webshare API):
-    # GitHub raw lists
-    # - https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt
-    # - https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt
-    # - https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt
-    # - https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt
-    # - https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt
-    # API endpoints
-    # - https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&protocol=http
-    # - https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc
-    # HTML pages
-    # - https://free-proxy-list.net/
-    # - https://spys.one/en/http-proxy-list/
+  # --- Residential proxy (Smartproxy/IPRoyal/BrightData/Oxylabs) ---
+  # Kredensial (host/port/user/password/country) HANYA di .env — file ini
+  # ke-track git. Isi RESIDENTIAL_* di .env untuk mengaktifkan. Residential
+  # jalan BERDAMPINGAN dengan Webshare dalam satu pool: datacenter (Webshare)
+  # otomatis dipakai untuk direct/social, residential untuk google/bing —
+  # routing per-proxy ditangani scheduler (PickEngineForProxy), bukan di sini.
+  # residential_country override opsional (default ikut RESIDENTIAL_COUNTRY).
+  residential_host: ""
+  residential_port: 0
+  residential_user: ""
+  residential_password: ""
+  residential_country: ""
+  # sources: proxy publik GRATIS (ip:port, TANPA auth, tanpa daftar akun).
+  # Ini yang dimaksud "free proxy list" proxyscrape dkk. Scraper auto-detect
+  # JSON/teks/HTML (extractIPPort regex), health-check paralel buang yang mati.
+  # SEMUA ini datacenter/publik → per routing scheduler otomatis cuma dipakai
+  # untuk direct/social, TIDAK google/bing (butuh residential ber-auth).
+  # GitHub raw lists sengaja TIDAK dipakai (sering basi/tidak valid).
+  sources:
+    - https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=http&proxy_format=ipport&format=text&timeout=5000
+    - https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http
+    - https://hproxy.com/api/proxy-list?protocol=http&format=txt
+    - https://freeproxydb.com/api/proxy/subscribe?protocol=http
 
 grpc:
   port: 50051

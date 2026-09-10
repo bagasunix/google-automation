@@ -1315,7 +1315,7 @@ func enrichProxyGeoIP(db *sql.DB, ips []string) {
 	enrichMu.Unlock()
 
 	for _, ip := range targets {
-		cc, tz := proxy.DetectGeoIP(ip)
+		cc, tz, _ := proxy.DetectGeoIP(ip)
 		if cc != "" {
 			_, _ = db.Exec("UPDATE proxies SET country=?, timezone=? WHERE ip=?", cc, tz, ip)
 		}

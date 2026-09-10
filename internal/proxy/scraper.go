@@ -17,11 +17,18 @@ type Proxy struct {
 	Port        int
 	Protocol    string
 	Country     string
+	Timezone    string // preset IANA tz (residential gateways only; empty for scraped proxies)
 	// Auth credentials (for authenticated proxies like Webshare).
 	Username    string
 	Password    string
 	// APIKeyIndex tracks which Webshare API key this proxy came from.
 	APIKeyIndex int
+	// IsResidential marks a gateway-style residential endpoint (Smartproxy,
+	// IPRoyal, etc.). These rotate the real exit IP per session behind a
+	// single gateway host, so the health checker must NOT geo-locate or
+	// datacenter-flag the gateway IP itself (see health.go) — the gateway
+	// commonly lives in a hosting range while the exit it hands out does not.
+	IsResidential bool
 }
 
 // Scraper fetches free proxy lists from multiple sources.
@@ -282,8 +289,11 @@ func (s *Scraper) fetchURL(url string) (string, error) {
 // jsonIPRe matches "ip":"x.x.x.x" in JSON.
 var jsonIPRe = regexp.MustCompile(`"ip"\s*:\s*"(.*?)"`)
 
-// jsonPortRe matches "port":12345 in JSON.
-var jsonPortRe = regexp.MustCompile(`"port"\s*:\s*(\d+)`)
+// jsonPortRe matches "port":12345 AND "port":"12345" in JSON. Geonode (and
+// several other APIs) serialize port as a quoted STRING, not a number, so the
+// optional quotes here are load-bearing — without them geonode parsed to zero
+// proxies despite returning a full list. Verified live 2026-09-09.
+var jsonPortRe = regexp.MustCompile(`"port"\s*:\s*"?(\d+)"?`)
 
 // parseGeonodeJSON parses geonode.com JSON response.
 func parseGeonodeJSON(text string) []Proxy {

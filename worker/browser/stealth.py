@@ -12,7 +12,10 @@ Responsibilities:
   - WebRTC leak prevention (disable RTCPeerConnection)
   - Navigator property patches (webdriver=false, plugins, languages, platform)
   - Screen resolution consistency with viewport
-  - Cookie jar is handled per session in session.py (fresh context each time)
+  - Cookie jar + fingerprint are both keyed to the proxy IP: session.py uses
+    a per-IP warm user-data-dir (see browser/profiles.py) and StealthProfile
+    .for_proxy(proxy_ip=...) seeds the whole fingerprint off the same IP, so
+    one IP is one persistent returning identity and a new IP is a new browser.
 
 All stealth scripts are injected via page.add_init_script() so they run before
 any page JavaScript executes.
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import random
 import logging
+import zlib
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("worker.browser.stealth")
@@ -209,14 +213,19 @@ _COUNTRY_LOCALES = {
 }
 
 
-def _pick_ua_for_locale(locale: str) -> str:
+def _pick_ua_for_locale(locale: str, rng: random.Random | None = None) -> str:
     """
     Pick a realistic User-Agent for the given locale.
     US/GB/AU/CA → mostly Windows Chrome, some Edge, occasional Firefox.
     DE/NL → more Linux Chrome (technical users).
     JP → more Mac Chrome/Safari.
     Fallback: random from the full pool.
+
+    `rng` lets the caller pass a seeded random.Random so the same proxy IP
+    deterministically yields the same UA across runs; defaults to the module
+    RNG (non-deterministic) when omitted.
     """
+    _r: random.Random = rng if rng is not None else random  # type: ignore[assignment]
     en_windows_uas = [ua for ua in USER_AGENTS
                       if "Windows" in ua and "Chrome" in ua and "Edg" not in ua]
     en_edge_uas = [ua for ua in USER_AGENTS if "Edg" in ua]
@@ -226,41 +235,41 @@ def _pick_ua_for_locale(locale: str) -> str:
 
     if locale.startswith("de") or locale.startswith("nl"):
         # DE/NL: 50% Windows Chrome, 25% Linux Chrome, 25% Firefox Windows
-        r = random.random()
-        if r < 0.50 and en_windows_uas:
-            return random.choice(en_windows_uas)
-        if r < 0.75 and linux_uas:
-            return random.choice(linux_uas)
+        roll = _r.random()
+        if roll < 0.50 and en_windows_uas:
+            return _r.choice(en_windows_uas)
+        if roll < 0.75 and linux_uas:
+            return _r.choice(linux_uas)
         if firefox_uas:
-            return random.choice(firefox_uas)
+            return _r.choice(firefox_uas)
     elif locale.startswith("ja"):
         # JP: 40% Mac Chrome, 30% Windows Chrome, 20% Safari, 10% Firefox Mac
-        r = random.random()
-        if r < 0.40 and mac_uas:
+        roll = _r.random()
+        if roll < 0.40 and mac_uas:
             mac_chrome = [ua for ua in mac_uas if "Chrome" in ua and "Firefox" not in ua]
             if mac_chrome:
-                return random.choice(mac_chrome)
-        if r < 0.70 and en_windows_uas:
-            return random.choice(en_windows_uas)
-        if r < 0.90:
+                return _r.choice(mac_chrome)
+        if roll < 0.70 and en_windows_uas:
+            return _r.choice(en_windows_uas)
+        if roll < 0.90:
             safari = [ua for ua in mac_uas if "Safari" in ua and "Chrome" not in ua]
             if safari:
-                return random.choice(safari)
+                return _r.choice(safari)
     elif locale.startswith(("en-US", "en-GB", "en-AU", "en-CA", "en-SG", "en-IN", "en-IE", "en-ZA", "en-PH")):
         # English: 60% Windows Chrome, 20% Edge, 10% Firefox, 10% Mac Chrome
-        r = random.random()
-        if r < 0.60 and en_windows_uas:
-            return random.choice(en_windows_uas)
-        if r < 0.80 and en_edge_uas:
-            return random.choice(en_edge_uas)
-        if r < 0.90 and firefox_uas:
-            return random.choice(firefox_uas)
+        roll = _r.random()
+        if roll < 0.60 and en_windows_uas:
+            return _r.choice(en_windows_uas)
+        if roll < 0.80 and en_edge_uas:
+            return _r.choice(en_edge_uas)
+        if roll < 0.90 and firefox_uas:
+            return _r.choice(firefox_uas)
         if mac_uas:
             mac_chrome = [ua for ua in mac_uas if "Chrome" in ua and "Firefox" not in ua]
             if mac_chrome:
-                return random.choice(mac_chrome)
+                return _r.choice(mac_chrome)
 
-    return random.choice(USER_AGENTS)
+    return _r.choice(USER_AGENTS)
 
 # WebGL renderer / vendor pairs (common real GPUs), split by platform —
 # these MUST be picked to match the platform/UA already chosen for the
@@ -337,10 +346,37 @@ class StealthProfile:
         return cls.for_proxy(country="US", is_mobile=is_mobile)
 
     @classmethod
-    def for_proxy(cls, country: str = "", timezone: str = "", is_mobile: bool | None = None) -> "StealthProfile":
+    def for_proxy(cls, country: str = "", timezone: str = "", is_mobile: bool | None = None, proxy_ip: str = "", seed_key: str = "") -> "StealthProfile":
         """
         Generate a profile consistent with the proxy's geography and device type.
+
+        The fingerprint (UA, viewport, WebGL GPU, canvas seed, hardware, etc.)
+        is seeded off a stable identity key so the SAME identity always produces
+        the SAME fingerprint across process runs — matching its warm cookie
+        profile in profiles.py, so one identity consistently looks like one
+        returning person, and a DIFFERENT identity reads as a brand-new browser.
+
+        Identity key precedence:
+          1. `seed_key` if given — used for gateway residential proxies, where
+             many sessions share ONE gateway IP but each has a unique rotating
+             exit behind a per-session username. Seeding off proxy_ip there
+             would make every exit share one fingerprint; seeding off the
+             per-session username gives each exit its own stable identity.
+          2. else `proxy_ip` — the datacenter case (one IP == one identity).
+          3. else unseeded (non-deterministic) — direct/test callers.
         """
+        key = seed_key or proxy_ip
+        if key:
+            # crc32 is stable across process runs (unlike builtin hash(), which
+            # is per-process randomized by PEP 456) — same stability guarantee
+            # profiles.py relies on to map an identity to its warm-profile slot,
+            # so fingerprint and cookie jar stay locked to the same identity.
+            rng = random.Random(zlib.crc32(key.encode()))
+        else:
+            # Unseeded Random() draws from os entropy — behaves like the module
+            # RNG (non-deterministic) but keeps a single concrete type so every
+            # rng.* call below and the _pick_ua_for_locale hand-off stay typed.
+            rng = random.Random()
         # Timezone must follow the proxy's real geography. The old last resort
         # here was random.choice(TIMEZONES), which is strictly worse than any
         # fixed value: it makes the browser claim e.g. Asia/Tokyo while the
@@ -370,20 +406,20 @@ class StealthProfile:
 
         if is_mobile is None:
             # 40% chance of mobile simulation
-            is_mobile = random.random() < 0.40
+            is_mobile = rng.random() < 0.40
 
         if is_mobile:
-            ua = random.choice(MOBILE_USER_AGENTS)
-            vp = random.choice(MOBILE_VIEWPORTS)
+            ua = rng.choice(MOBILE_USER_AGENTS)
+            vp = rng.choice(MOBILE_VIEWPORTS)
             is_android = "Android" in ua
             platform = "Linux armv8l" if is_android else "iPhone"
             max_touch = 5
-            dpr = random.choice([2.0, 3.0])
-            hw_conc = random.choice([6, 8])
+            dpr = rng.choice([2.0, 3.0])
+            hw_conc = rng.choice([6, 8])
             webgl_pool = WEBGL_CONFIGS_ANDROID if is_android else WEBGL_CONFIGS_IOS
         else:
-            ua = _pick_ua_for_locale(loc)
-            vp = random.choice(VIEWPORTS)
+            ua = _pick_ua_for_locale(loc, rng=rng)
+            vp = rng.choice(VIEWPORTS)
             if "Windows" in ua:
                 platform, webgl_pool = "Win32", WEBGL_CONFIGS_WINDOWS
             elif "Macintosh" in ua:
@@ -391,14 +427,14 @@ class StealthProfile:
             else:
                 platform, webgl_pool = "Linux x86_64", WEBGL_CONFIGS_LINUX
             max_touch = 0
-            dpr = random.choice(DEVICE_PIXEL_RATIOS)
-            hw_conc = random.choice(HARDWARE_CONCURRENCIES)
+            dpr = rng.choice(DEVICE_PIXEL_RATIOS)
+            hw_conc = rng.choice(HARDWARE_CONCURRENCIES)
 
         # Pick a WebGL vendor/renderer consistent with the platform already
         # chosen above — see the WEBGL_CONFIGS_* comment for why this can't
         # be a platform-independent random.choice() across the whole pool.
-        webgl = random.choice(webgl_pool)
-        color_depth = random.choice(COLOR_DEPTHS)
+        webgl = rng.choice(webgl_pool)
+        color_depth = rng.choice(COLOR_DEPTHS)
 
         return cls(
             user_agent=ua,
@@ -415,7 +451,7 @@ class StealthProfile:
             max_touch_points=max_touch,
             # 1..255: must be non-zero, or XOR-ing with it is a no-op and
             # the canvas noise injection silently does nothing at all.
-            canvas_noise_seed=random.randint(1, 255),
+            canvas_noise_seed=rng.randint(1, 255),
         )
 
 

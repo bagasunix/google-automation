@@ -23,30 +23,40 @@ BASE_PROFILES_DIR = _paths.PROFILES_DIR
 DEFAULT_POOL_SIZE = 50
 
 
-def get_profile_dir(profile_id: Optional[int] = None, proxy_ip: str = "") -> str:
+def get_profile_dir(profile_id: Optional[int] = None, proxy_ip: str = "", identity_key: str = "") -> str:
     """
     Get or create a persistent user-data-dir for the browser session.
-    If profile_id is None, derive an index deterministically from the proxy IP
-    or default to profile 0.
+
+    Slot selection precedence:
+      1. explicit `profile_id` (mod pool size)
+      2. `identity_key` if given — for gateway residential proxies, where many
+         sessions share ONE gateway IP but each has a unique rotating exit
+         behind a per-session username. Keying the warm profile off proxy_ip
+         there would cram every exit's cookies into one shared slot (exactly
+         the impossible-travel/cookie-mixing signal this pool exists to avoid);
+         keying off the per-session username gives each exit its own slot.
+      3. else `proxy_ip` — the datacenter case (one IP == one slot).
+      4. else slot 0.
     """
     os.makedirs(BASE_PROFILES_DIR, exist_ok=True)
 
+    key = identity_key or proxy_ip
     if profile_id is not None:
         idx = profile_id % DEFAULT_POOL_SIZE
-    elif proxy_ip:
-        # Deterministically map IP to a profile slot (0..N-1). Must use a
-        # hash that's stable ACROSS PROCESS RUNS, not Python's builtin
+    elif key:
+        # Deterministically map the identity to a profile slot (0..N-1). Must
+        # use a hash that's stable ACROSS PROCESS RUNS, not Python's builtin
         # hash() — that one is randomized per-process by default (PEP 456 /
         # PYTHONHASHSEED) specifically to prevent it being relied on this
         # way. Confirmed live: hash('31.58.9.4') % 10 returned 2, 7, then 5
         # across three separate interpreter runs. That meant every worker
-        # restart silently reshuffled which proxy used which warm profile —
-        # cookies for one proxy's IP could end up reused moments later by a
-        # completely different proxy in a different country, defeating the
-        # entire point of a per-proxy warm profile (see the module
-        # docstring) and actively creating the IP/cookie-mismatch signal
+        # restart silently reshuffled which identity used which warm profile —
+        # cookies for one identity could end up reused moments later by a
+        # completely different one in a different country, defeating the
+        # entire point of a per-identity warm profile (see the module
+        # docstring) and actively creating the identity/cookie-mismatch signal
         # this system exists to avoid. zlib.crc32 is stable across runs.
-        idx = zlib.crc32(proxy_ip.encode()) % DEFAULT_POOL_SIZE
+        idx = zlib.crc32(key.encode()) % DEFAULT_POOL_SIZE
     else:
         idx = 0
 

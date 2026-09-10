@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -176,6 +177,25 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if chatID := os.Getenv("TELEGRAM_CHAT_ID"); chatID != "" {
 		c.Telegram.ChatID = chatID
+	}
+
+	// Residential proxy credentials — kept out of config.yaml (git-tracked).
+	if v := os.Getenv("RESIDENTIAL_HOST"); v != "" {
+		c.Proxy.ResidentialHost = v
+	}
+	if v := os.Getenv("RESIDENTIAL_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			c.Proxy.ResidentialPort = p
+		}
+	}
+	if v := os.Getenv("RESIDENTIAL_USER"); v != "" {
+		c.Proxy.ResidentialUser = v
+	}
+	if v := os.Getenv("RESIDENTIAL_PASSWORD"); v != "" {
+		c.Proxy.ResidentialPassword = v
+	}
+	if v := os.Getenv("RESIDENTIAL_COUNTRY"); v != "" {
+		c.Proxy.ResidentialCountry = v
 	}
 }
 

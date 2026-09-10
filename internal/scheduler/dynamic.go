@@ -161,8 +161,28 @@ func (s *Scheduler) IsEnginePaused(engine string) bool {
 // that are currently paused or have ratio == 0.
 // Returns empty string if no traffic source is available.
 func (s *Scheduler) PickEngineAvailable() string {
-	googleOK := !s.IsEnginePaused("google") && s.cfg.EngineRatio.Google > 0
-	bingOK := !s.IsEnginePaused("bing") && s.cfg.EngineRatio.Bing > 0
+	return s.pickEngine(false)
+}
+
+// PickEngineForProxy is the datacenter-aware variant. A datacenter/hosting IP
+// gets a reflexive /sorry/ CAPTCHA from Google (and often Bing) the moment it
+// hits the search engine — that was the root cause of the "DOS captcha" the
+// worker kept logging. So for a datacenter proxy we drop google/bing entirely
+// and only consider direct/social, which navigate straight to our own domain
+// and never touch a search engine. Residential/unknown proxies use the full
+// ratio unchanged.
+func (s *Scheduler) PickEngineForProxy(px proxy.PooledProxy) string {
+	// A residential gateway is trusted for search engines even if its gateway
+	// IP happened to look like a datacenter — the real exit IP is residential.
+	datacenterOnly := px.IsDatacenter && !px.IsResidential
+	return s.pickEngine(datacenterOnly)
+}
+
+// pickEngine does the weighted ratio roll. When datacenterOnly is true, the
+// two search engines are excluded so a hosting IP is never sent to Google/Bing.
+func (s *Scheduler) pickEngine(datacenterOnly bool) string {
+	googleOK := !datacenterOnly && !s.IsEnginePaused("google") && s.cfg.EngineRatio.Google > 0
+	bingOK := !datacenterOnly && !s.IsEnginePaused("bing") && s.cfg.EngineRatio.Bing > 0
 	directOK := s.cfg.EngineRatio.Direct > 0
 	socialOK := s.cfg.EngineRatio.Social > 0
 

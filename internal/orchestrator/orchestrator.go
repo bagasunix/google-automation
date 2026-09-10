@@ -315,7 +315,7 @@ func (o *Orchestrator) runOneSlotCycle(ctx context.Context, slotID int, fm *Flee
 		}
 	}
 
-	engine := o.scheduler.PickEngineAvailable()
+	engine := o.scheduler.PickEngineForProxy(px)
 	if engine == "" {
 		o.pool.Release(px)
 		fm.UpdateWorkerState(slotID, func(w *WorkerState) {

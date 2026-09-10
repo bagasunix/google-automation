@@ -47,6 +47,15 @@ type PooledProxy struct {
 	// APIKeyIndex tracks which Webshare API key this proxy came from.
 	// Used for key rotation: exhaust all proxies from key #0 before key #1.
 	APIKeyIndex int
+	// IsDatacenter is set when the health check flagged this IP as a
+	// hosting/datacenter range. Google reflexively serves /sorry/ CAPTCHA
+	// to these, so the scheduler steers them away from google/bing and
+	// toward direct/social traffic (which never touches a search engine).
+	IsDatacenter bool
+	// IsResidential marks a gateway residential proxy — trusted for
+	// google/bing regardless of the gateway IP's own datacenter flag,
+	// because the real exit IP rotates per session and is residential.
+	IsResidential bool
 }
 
 // NewPool creates an empty proxy pool.

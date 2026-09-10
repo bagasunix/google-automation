@@ -11,6 +11,18 @@ import (
 	"google-automation/internal/config"
 )
 
+// residentialCountryTZ maps a residential provider's country code to an IANA
+// timezone. The gateway IP can't be geo-located to the real exit (see
+// health.go), so we set the browser timezone from the configured country here.
+// Empty/unknown falls back to "" — the worker's stealth profile then derives
+// tz from country on its own (browser/stealth.py _COUNTRY_TIMEZONES).
+var residentialCountryTZ = map[string]string{
+	"id": "Asia/Jakarta", "us": "America/New_York", "gb": "Europe/London",
+	"de": "Europe/Berlin", "fr": "Europe/Paris", "nl": "Europe/Amsterdam",
+	"sg": "Asia/Singapore", "jp": "Asia/Tokyo", "au": "Australia/Sydney",
+	"ca": "America/Toronto", "in": "Asia/Kolkata", "my": "Asia/Kuala_Lumpur",
+}
+
 // GenerateResidentialProxies builds a list of proxy endpoints with rotating session IDs
 // for providers like Smartproxy, IPRoyal, BrightData, or Oxylabs.
 func GenerateResidentialProxies(cfg *config.ProxyConfig, count int) []Proxy {
@@ -27,6 +39,7 @@ func GenerateResidentialProxies(cfg *config.ProxyConfig, count int) []Proxy {
 	if country == "" {
 		country = "id"
 	}
+	tz := residentialCountryTZ[country]
 
 	for i := 1; i <= count; i++ {
 		sessionID := fmt.Sprintf("sess%d%d", time.Now().Unix()%10000, i)
@@ -39,13 +52,15 @@ func GenerateResidentialProxies(cfg *config.ProxyConfig, count int) []Proxy {
 		}
 
 		out = append(out, Proxy{
-			IP:          host,
-			Port:        port,
-			Protocol:    "http",
-			Country:     strings.ToUpper(country),
-			Username:    username,
-			Password:    pass,
-			APIKeyIndex: 0,
+			IP:            host,
+			Port:          port,
+			Protocol:      "http",
+			Country:       strings.ToUpper(country),
+			Username:      username,
+			Password:      pass,
+			APIKeyIndex:   0,
+			IsResidential: true,
+			Timezone:      tz,
 		})
 	}
 	return out

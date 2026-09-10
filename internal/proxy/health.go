@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +22,7 @@ type HealthResult struct {
 	Country             string
 	Timezone            string // real IANA timezone from DetectGeoIP, e.g. "Europe/Berlin"
 	IPRemote            string // detected external IP through the proxy
+	IsDatacenter        bool   // ip-api flagged this as hosting/datacenter range — Google auto-CAPTCHAs these
 }
 
 // Checker health-checks proxies in parallel using Go concurrency.
@@ -129,7 +131,7 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 		if resp.StatusCode == http.StatusOK {
 			result.Latency = time.Since(start)
 			result.Healthy = true
-			result.Country, result.Timezone = DetectGeoIP(p.IP)
+			c.resolveGeo(&result, p)
 			result.IPRemote = p.IP
 			return result
 		}
@@ -140,7 +142,7 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 			result.Latency = time.Since(start)
 			result.Healthy = true
 			result.BandwidthExhausted = true
-			result.Country, result.Timezone = DetectGeoIP(p.IP)
+			c.resolveGeo(&result, p)
 			result.IPRemote = p.IP
 			fmt.Printf("[proxy-health] %s:%d bandwidth exhausted (402) — marking available, bw-tracker will skip\n", p.IP, p.Port)
 			return result
@@ -151,11 +153,29 @@ func (c *Checker) checkOne(p Proxy) HealthResult {
 	return result
 }
 
+// resolveGeo fills country/timezone/datacenter on a health result. For a
+// gateway residential proxy the gateway IP is NOT the exit IP, so geo-locating
+// or datacenter-flagging it is wrong (the gateway often sits in a hosting
+// range while the exit it hands out is residential). Instead we trust the
+// preset country/timezone that GenerateResidentialProxies set from config, and
+// force IsDatacenter=false so the scheduler will send it to google/bing.
+func (c *Checker) resolveGeo(result *HealthResult, p Proxy) {
+	if p.IsResidential {
+		result.Country = p.Country
+		result.Timezone = p.Timezone
+		result.IsDatacenter = false
+		return
+	}
+	result.Country, result.Timezone, result.IsDatacenter = DetectGeoIP(p.IP)
+}
+
 type GeoIPResponse struct {
 	Status      string `json:"status"`
 	Country     string `json:"country"`
 	CountryCode string `json:"countryCode"`
 	Timezone    string `json:"timezone"`
+	Hosting     bool   `json:"hosting"`
+	Proxy       bool   `json:"proxy"`
 }
 
 // ipwhoisResponse is the fallback provider's payload (ipwho.is).
@@ -165,23 +185,30 @@ type ipwhoisResponse struct {
 	Timezone    struct {
 		ID string `json:"id"`
 	} `json:"timezone"`
+	Connection struct {
+		Org string `json:"org"`
+		ISP string `json:"isp"`
+	} `json:"connection"`
 }
 
 // queryIPAPI asks ip-api.com. Returns ok=false on any failure so the caller
 // can try another provider rather than silently accepting a wrong answer.
-func queryIPAPI(client *http.Client, ip string) (country, tz string, ok bool) {
-	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,timezone", ip))
+// The `hosting` and `proxy` flags come free in the same response — no extra
+// request — and tell us whether this is a datacenter/hosting IP that Google
+// reflexively serves a CAPTCHA to.
+func queryIPAPI(client *http.Client, ip string) (country, tz string, datacenter, ok bool) {
+	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode,timezone,hosting,proxy", ip))
 	if err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	var data GeoIPResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || data.Status != "success" {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	country = data.CountryCode
@@ -189,34 +216,54 @@ func queryIPAPI(client *http.Client, ip string) (country, tz string, ok bool) {
 		country = data.Country
 	}
 	if country == "" || data.Timezone == "" {
-		return "", "", false
+		return "", "", false, false
 	}
-	return country, data.Timezone, true
+	return country, data.Timezone, data.Hosting || data.Proxy, true
 }
 
 // queryIPWhois asks ipwho.is — a second, independently-operated provider, so
 // a rate-limit or outage at ip-api.com doesn't take geo detection down with it.
-func queryIPWhois(client *http.Client, ip string) (country, tz string, ok bool) {
+// ipwho.is has no dedicated hosting flag, so datacenter is inferred from the
+// connection org/ISP against the known-hosting keyword list.
+func queryIPWhois(client *http.Client, ip string) (country, tz string, datacenter, ok bool) {
 	resp, err := client.Get(fmt.Sprintf("https://ipwho.is/%s", ip))
 	if err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	var data ipwhoisResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || !data.Success {
-		return "", "", false
+		return "", "", false, false
 	}
 	if data.CountryCode == "" || data.Timezone.ID == "" {
-		return "", "", false
+		return "", "", false, false
 	}
-	return data.CountryCode, data.Timezone.ID, true
+	org := strings.ToLower(data.Connection.Org + " " + data.Connection.ISP)
+	datacenter = false
+	for _, kw := range datacenterOrgKeywords {
+		if strings.Contains(org, kw) {
+			datacenter = true
+			break
+		}
+	}
+	return data.CountryCode, data.Timezone.ID, datacenter, true
 }
 
-// DetectGeoIP resolves an IP's country and IANA timezone.
+// datacenterOrgKeywords mirrors the Python worker's _DATACENTER_ORGS list
+// (browser/ip_health.py) so both sides agree on what counts as a hosting IP.
+var datacenterOrgKeywords = []string{
+	"amazon", "aws", "google", "azure", "microsoft", "digitalocean",
+	"linode", "vultr", "hetzner", "ovh", "leaseweb", "choopa",
+	"serverius", "datacamp", "m247", "tzulo", "psychz", "egihosting",
+	"hosting", "datacenter", "data center", "server", "cloud",
+}
+
+// DetectGeoIP resolves an IP's country, IANA timezone, and whether it is a
+// datacenter/hosting IP.
 //
 // Every browser session sets its timezone from this, so a wrong answer is an
 // "impossible geography" signal to every site the proxy visits. Two hazards
@@ -234,24 +281,24 @@ func queryIPWhois(client *http.Client, ip string) (country, tz string, ok bool) 
 //     ip-api and Portugal on ipwho.is — so a mismatch is logged. We keep the
 //     primary's answer (picking arbitrarily wouldn't be more correct), but
 //     the log makes an otherwise invisible inconsistency debuggable.
-func DetectGeoIP(ip string) (string, string) {
+func DetectGeoIP(ip string) (country, tz string, datacenter bool) {
 	client := &http.Client{Timeout: 4 * time.Second}
 
-	country, tz, ok := queryIPAPI(client, ip)
+	country, tz, datacenter, ok := queryIPAPI(client, ip)
 	if ok {
-		if c2, tz2, ok2 := queryIPWhois(client, ip); ok2 && (c2 != country || tz2 != tz) {
+		if c2, tz2, _, ok2 := queryIPWhois(client, ip); ok2 && (c2 != country || tz2 != tz) {
 			log.Printf("[geoip] %s: providers disagree — ip-api=%s/%s ipwho.is=%s/%s (using ip-api)",
 				ip, country, tz, c2, tz2)
 		}
-		return country, tz
+		return country, tz, datacenter
 	}
 
 	log.Printf("[geoip] %s: ip-api lookup failed — trying fallback provider", ip)
-	if country, tz, ok = queryIPWhois(client, ip); ok {
-		return country, tz
+	if country, tz, datacenter, ok = queryIPWhois(client, ip); ok {
+		return country, tz, datacenter
 	}
 
 	log.Printf("[geoip] %s: ALL geo providers failed — falling back to UTC, which is a "+
 		"detectable mismatch for a non-UTC proxy", ip)
-	return "", "UTC"
+	return "", "UTC", false
 }
