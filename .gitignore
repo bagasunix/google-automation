@@ -42,3 +42,8 @@ Thumbs.db
 *.log
 *.db-shm
 *.db-wal
+
+# Local secrets and generated files
+.env
+bin/
+downloaded_files/
